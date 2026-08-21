@@ -181,8 +181,6 @@ server:
         env:
           - name: EXTENSION_NAME
             value: argoflow
-          - name: EXTENSION_VERSION
-            value: v1.0.0
           - name: EXTENSION_URL
             value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension.tar.gz
           - name: EXTENSION_CHECKSUM_URL
@@ -209,8 +207,6 @@ spec:
           env:
             - name: EXTENSION_NAME
               value: argoflow
-            - name: EXTENSION_VERSION
-              value: v1.0.0
             - name: EXTENSION_URL
               value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension.tar.gz
             - name: EXTENSION_CHECKSUM_URL
