@@ -1,0 +1,26 @@
+{
+  "name": "argocd-workflows-events-extension",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "webpack --mode production",
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "check:large-fixture": "node scripts/generate-large-workflow-status.mjs --check",
+    "check": "tsc --noEmit && npm run build && npm run check:licenses && npm run check:large-fixture && node --experimental-strip-types --test test/*.test.mjs",
+    "install:local": "bash scripts/install-local.sh",
+    "package:release": "bash scripts/package-release.sh",
+    "release": "semantic-release",
+    "uninstall:local": "bash scripts/uninstall-local.sh"
+  },
+  "devDependencies": {
+    "@types/react": "17.0.91",
+    "react": "17.0.2",
+    "semantic-release": "25.0.9",
+    "ts-loader": "9.5.2",
+    "typescript": "5.9.2",
+    "webpack": "5.109.2",
+    "webpack-cli": "6.0.1"
+  }
+}

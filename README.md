@@ -9,19 +9,16 @@
 </p>
 
 <p align="center">
-  <img alt="Project status: proof of concept" src="https://img.shields.io/badge/status-POC-f59e0b">
-  <img alt="Read only" src="https://img.shields.io/badge/access-read--only-18be94">
   <img alt="Tested with Argo CD 2.13.4 and 3.4.6" src="https://img.shields.io/badge/Argo%20CD-2.13.4%20%7C%203.4.6-0dadea">
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <a href="https://github.com/nickmaccarthy/ArgoFlow/actions/workflows/ci-release.yml"><img alt="CI status" src="https://github.com/nickmaccarthy/ArgoFlow/actions/workflows/ci-release.yml/badge.svg"></a>
   <a href="https://github.com/nickmaccarthy/ArgoFlow/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/nickmaccarthy/ArgoFlow?display_name=tag"></a>
 </p>
 
 Argo CD shows which Kubernetes resources belong to an Application. ArgoFlow adds the automation story: which event arrived, which Sensor consumed it, which trigger created a Workflow, and what happened inside that Workflow.
 
-No separate UI. No new backend. No mutation controls.
+No separate UI. No new backend. No BS.
 
-> [!IMPORTANT]
-> ArgoFlow is an independent community project. It is not an official Argo Project or CNCF release.
 
 ## Screenshots
 
@@ -57,7 +54,7 @@ Safe EventSource configuration, controller activity, named events, and condition
 
 ## Why ArgoFlow?
 
-When using workflows events I found myself bounching between two differnt UI's.  I wanted to tie this all together under ArgoCD. ArgoFlow brings into one Application-scoped experience.
+When using workflows events I found myself bounching between two differnt UI's, ArgoCD and Argo Worfkow.  The Argo Workflows UI leaves alot be desired and the disconnect made troubleshooting things very difficult, so I made ArgoFlow which bring it into one Application-scoped experience.
 
 - See recent Workflow runs managed by an Application.
 - Explore Workflow DAGs with search, status filters, zoom, pan, and fit controls.
@@ -171,8 +168,81 @@ Restart or roll out `argocd-server`, hard-refresh Argo CD, then open an Applicat
 
 See Argo CD's [UI extension documentation](https://argo-cd.readthedocs.io/en/stable/developer-guide/extensions/ui-extensions/) for the supported bundle-loading contract.
 
-> [!NOTE]
-> A reusable Helm/Kustomize installation example is planned before the first public release. The current installer targets this repository's Colima development lab.
+### Install with the Argo CD Helm chart
+
+The Argo CD Helm chart has built-in support for the Argo CD extension installer. Pin the ArgoFlow version rather than using a mutable `latest` URL:
+
+```yaml
+server:
+  extensions:
+    enabled: true
+    extensionList:
+      - name: extension-argoflow
+        env:
+          - name: EXTENSION_NAME
+            value: argoflow
+          - name: EXTENSION_VERSION
+            value: v1.0.0
+          - name: EXTENSION_URL
+            value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension.tar.gz
+          - name: EXTENSION_CHECKSUM_URL
+            value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension_checksums.txt
+```
+
+Apply the values through your existing Argo CD Helm release, then wait for `argocd-server` to roll out. Change all three version references when upgrading.
+
+### Install with Kustomize
+
+Add this strategic-merge patch to the overlay that installs Argo CD:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: extension-argoflow
+          image: quay.io/argoprojlabs/argocd-extension-installer:v1.0.1
+          env:
+            - name: EXTENSION_NAME
+              value: argoflow
+            - name: EXTENSION_VERSION
+              value: v1.0.0
+            - name: EXTENSION_URL
+              value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension.tar.gz
+            - name: EXTENSION_CHECKSUM_URL
+              value: https://github.com/nickmaccarthy/ArgoFlow/releases/download/v1.0.0/extension_checksums.txt
+          volumeMounts:
+            - name: extensions
+              mountPath: /tmp/extensions/
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: argocd-server
+          volumeMounts:
+            - name: extensions
+              mountPath: /tmp/extensions/
+      volumes:
+        - name: extensions
+          emptyDir: {}
+```
+
+Reference it from your existing `kustomization.yaml`:
+
+```yaml
+patches:
+  - path: argoflow-extension-patch.yaml
+```
+
+If your Argo CD Deployment or server container uses a different name, update both `argocd-server` fields. For production, pin the installer image by digest. Remove the patch or Helm `extensionList` entry to uninstall ArgoFlow.
 
 ### Local development lab
 
@@ -252,8 +322,6 @@ ArgoFlow is a working v1 proof of concept. Current implementation has been exerc
 
 Before the first public release:
 
-- Add reusable Helm/Kustomize installation examples.
-- Select and add an open-source license.
 - Add public contribution and security-reporting guides.
 
 ## Roadmap
@@ -278,6 +346,10 @@ Issues, UX feedback, compatibility reports, and pull requests are welcome. For b
 ## Releases
 
 Merges to `main` run the full check suite and [semantic-release](https://semantic-release.gitbook.io/semantic-release/). Conventional Commit messages determine the next version (`fix:` patch, `feat:` minor, and `BREAKING CHANGE:` major). Each release creates a Git tag and GitHub Release with a ready-to-install `extension-argoflow-vX.Y.Z.js` bundle attached. This project does not publish to npm.
+
+## License
+
+Copyright 2026 Nicholas MacCarthy. Licensed under the [Apache License 2.0](LICENSE).
 
 ## Release evidence
 

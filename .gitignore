@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.scratch/
+coverage/
+
+.DS_Store
+*.log
+npm-debug.log*
+
+.env
+.env.*
+!.env.example
+
+.idea/
+.vscode/
