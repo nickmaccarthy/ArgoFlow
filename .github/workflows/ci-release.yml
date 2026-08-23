@@ -130,12 +130,12 @@ jobs:
             sleep 2
           done
           echo '--- /api/v1/extensions ---'
-          curl -sk "https://localhost:8090/api/v1/extensions" | head -c 2000 || true
+          curl -sk "https://127.0.0.1:8090/api/v1/extensions" | head -c 2000 || true
           echo
           echo '--- bundle HTTP status ---'
-          curl -sk -o /dev/null -w '%{http_code}\n' "https://localhost:8090/extensions/extension-argoflow.js" || true
+          curl -sk -o /dev/null -w '%{http_code}\n' "https://127.0.0.1:8090/extensions/extension-argoflow.js" || true
           echo '--- loader head ---'
-          curl -sk "https://localhost:8090/extensions.js" | head -c 1200 || true
+          curl -sk "https://127.0.0.1:8090/extensions.js" | head -c 1200 || true
           echo
           echo '--- argocd-server extension dir ---'
           kubectl -n argocd exec deploy/argocd-server -- sh -c 'ls -la /tmp/extensions; cat /shared/app/ui/extensions.sh 2>/dev/null | head -c 500' || true

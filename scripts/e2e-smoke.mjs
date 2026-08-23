@@ -18,6 +18,7 @@ import puppeteer from 'puppeteer-core';
 
 const BASE_URL = process.env.ARGOCD_BASE_URL || 'https://127.0.0.1:8090';
 const ARGOCD_PASSWORD = process.env.ARGOCD_PASSWORD;
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const APP_NAME = 'argoflow-e2e';
 const WORKFLOW_NAME = 'argoflow-hello-e2e';
 const RUN_PAGE_TIMEOUT_MS = Number(process.env.ARGOCD_SYNC_TIMEOUT_MS || 300000);
