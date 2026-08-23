@@ -42,7 +42,7 @@ async function textExists(page, selector, text, timeoutMs) {
 async function clickExtensionTab(page, {text, icon}, timeoutMs = 120000) {
   // App-view extension tabs render as icon-only buttons in the view switcher.
   // Match on text, title/aria-label, or the Font Awesome icon class.
-  const matcher = needle => [...document.querySelectorAll('button, a, [role="tab"]')].some(node => {
+  const matcher = needle => [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')].some(node => {
     const visible = (node.textContent || '').trim();
     const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
     const iconNode = node.querySelector && node.querySelector('i');
@@ -51,7 +51,7 @@ async function clickExtensionTab(page, {text, icon}, timeoutMs = 120000) {
   });
   await page.waitForFunction(matcher, {timeout: timeoutMs}, {label: text, icon});
   await page.evaluate(needle => {
-    const target = [...document.querySelectorAll('button, a, [role="tab"]')].find(node => {
+    const target = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')].find(node => {
       const visible = (node.textContent || '').trim();
       const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
       const iconNode = node.querySelector && node.querySelector('i');

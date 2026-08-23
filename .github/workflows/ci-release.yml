@@ -34,8 +34,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pinned to the interactive-verification combos documented in the README.
-        argocd: ['v2.13.4', 'v3.4.6']
+        # Oldest extension-capable 2.x release plus the latest 3.4 patch.
+        argocd: ['v2.13.4', 'v3.4.7']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
