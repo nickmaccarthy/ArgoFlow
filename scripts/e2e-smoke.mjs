@@ -66,10 +66,24 @@ const browser = await puppeteer.launch({
   args: ['--no-sandbox', '--disable-dev-shm-usage', '--window-size=1600,1000']
 });
 
+
 try {
   const page = await browser.newPage();
   page.setDefaultTimeout(60000);
   await page.setViewport({width: 1600, height: 1000});
+
+  // Surface everything the browser tells us: console lines and page errors.
+  const browserConsole = [];
+  page.on('console', message => {
+    const line = `[browser:${message.type()}] ${message.text()}`;
+    browserConsole.push(line);
+    console.log(line);
+  });
+  page.on('pageerror', error => {
+    const line = `[browser:pageerror] ${error.message}`;
+    browserConsole.push(line);
+    console.log(line);
+  });
 
   // Capture the extension's anonymous telemetry stream for contract assertions.
   await page.evaluateOnNewDocument(() => {
@@ -99,6 +113,17 @@ try {
   await page.goto(`${BASE_URL}/applications/${APP_NAME}`, {waitUntil: 'domcontentloaded'});
   await textExists(page, 'body', APP_NAME, 60000);
   log('application page loaded');
+
+  // Why aren't the extension tabs there? Dump what the host actually loaded.
+  const diagnostics = await page.evaluate(() => ({
+    href: location.href,
+    extensionScripts: [...document.querySelectorAll('script')].map(script => script.getAttribute('src')).filter(src => src && src.includes('extension')),
+    extensionsApiType: typeof window.extensionsAPI,
+    tabLikeTexts: [...document.querySelectorAll('[class*="tab" i], [role="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 80),
+    telemetryCount: (window.__argoflowTelemetry || []).length
+  }));
+  console.log(`[smoke] diagnostics ${JSON.stringify(diagnostics, null, 2)}`);
+  await shot(page, '00-application-page');
 
   // The Workflows app-view extension must render its bounded runs table.
   await clickButtonWithText(page, 'Workflows');
