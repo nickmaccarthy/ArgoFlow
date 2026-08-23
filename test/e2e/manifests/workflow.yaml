@@ -6,6 +6,7 @@ metadata:
   name: argoflow-hello-e2e
   namespace: argoflow-e2e
 spec:
+  serviceAccountName: argo
   entrypoint: main
   templates:
     - name: main
@@ -19,6 +20,8 @@ spec:
             arguments:
               parameters: [{name: message, value: "step two"}]
     - name: say
+      retryStrategy:
+        limit: "3"
       inputs:
         parameters:
           - name: message
