@@ -52,8 +52,8 @@ async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
       const icons = document.querySelectorAll(`.${needleIcon}`).length;
       const nodes = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')];
       const target = nodes.find(node => {
-        const iconNode = node.querySelector ? node.querySelector('i') : null;
-        return iconNode ? String(iconNode.className).includes(needleIcon) : false;
+        if (!node.querySelectorAll) return false;
+        return [...node.querySelectorAll('i')].some(iconNode => String(iconNode.className).includes(needleIcon));
       });
       if (target) {
         target.click();
