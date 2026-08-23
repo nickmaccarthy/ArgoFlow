@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: argoflow-nightly-e2e
+  namespace: argoflow-e2e
+spec:
+  # February 31st never occurs: deterministic "scheduled but never fires".
+  schedule: "0 0 31 2 *"
+  suspended: true
+  workflowSpec:
+    entrypoint: main
+    templates:
+      - name: main
+        container:
+          image: busybox:1.36
+          command: [sh, -c]
+          args: ["nightly body"]

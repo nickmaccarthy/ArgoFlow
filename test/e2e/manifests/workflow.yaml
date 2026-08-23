@@ -1,0 +1,28 @@
+# A single finished run is enough for every smoke assertion: the runs table lists it,
+# the resource tree exposes its extension tab, and the DAG renders its static steps.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: argoflow-hello-e2e
+  namespace: argoflow-e2e
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      steps:
+        - - name: one
+            template: say
+            arguments:
+              parameters: [{name: message, value: "step one"}]
+        - - name: two
+            template: say
+            arguments:
+              parameters: [{name: message, value: "step two"}]
+    - name: say
+      inputs:
+        parameters:
+          - name: message
+      container:
+        image: busybox:1.36
+        command: [sh, -c]
+        args: ["echo {{inputs.parameters.message}}"]
