@@ -99,16 +99,16 @@ jobs:
             sync="$(kubectl -n argocd get application argoflow-e2e -o jsonpath='{.status.sync.status}' 2>/dev/null || echo '')"
             phase="$(kubectl -n argoflow-e2e get workflow argoflow-hello-e2e -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
             echo "attempt ${attempt}: sync=${sync} workflow=${phase}"
-            if [ "${phase}" != "" ] && [ "${phase}" != "Pending" ] && [ "${phase}" != "Running" ]; then
+            if [ "${sync}" = "Synced" ] && [ "${phase}" = "Succeeded" ]; then
+              kubectl -n argoflow-e2e get workflows,workflowtemplates,cronworkflows,eventsources,sensors,eventbus,serviceaccounts
+              exit 0
+            fi
+            if [ "${phase}" = "Failed" ] || [ "${phase}" = "Error" ]; then
               echo "Workflow reached terminal phase ${phase}; failing fast with details:"
               kubectl -n argoflow-e2e get workflow argoflow-hello-e2e -o jsonpath='{.status.message}{"\n"}{range .status.nodes[*]}{.name}{" -> "}{.phase}{" | "}{.message}{"\n"}{end}' || true
               kubectl -n argoflow-e2e get pods -o wide || true
               kubectl -n argoflow-e2e describe pod -l workflows.argoproj.io/workflow=argoflow-hello-e2e || true
               exit 1
-            fi
-            if [ "${sync}" = "Synced" ] && [ "${phase}" = "Succeeded" ]; then
-              kubectl -n argoflow-e2e get workflows,workflowtemplates,cronworkflows,eventsources,sensors,eventbus,serviceaccounts
-              exit 0
             fi
             sleep 10
           done
