@@ -40,21 +40,24 @@ async function textExists(page, selector, text, timeoutMs) {
 }
 
 async function clickButtonWithText(page, text, timeoutMs = 120000) {
-  // App-view extension tabs mount after the Application payload arrives; wait for them.
-  await page.waitForFunction(
-    label => [...document.querySelectorAll('button, a, [role="tab"]')]
-      .some(node => (node.textContent || '').trim() === label),
-    {timeout: timeoutMs},
-    text
-  );
+  // App-view extension tabs render as icon-only buttons in the view switcher;
+  // their label lives in title/aria-label, not textContent.
+  const matcher = label => [...document.querySelectorAll('button, a, [role="tab"]')].some(node => {
+    const visible = (node.textContent || '').trim();
+    const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
+    return visible === label || named === label;
+  });
+  await page.waitForFunction(matcher, {timeout: timeoutMs}, text);
   await page.evaluate(label => {
-    const target = [...document.querySelectorAll('button, a, [role="tab"]')]
-      .find(node => (node.textContent || '').trim() === label);
+    const target = [...document.querySelectorAll('button, a, [role="tab"]')].find(node => {
+      const visible = (node.textContent || '').trim();
+      const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
+      return visible === label || named === label;
+    });
     if (!target) throw new Error(`No button or link labeled ${label}`);
     target.click();
   }, text);
 }
-
 async function shot(page, name) {
   await page.screenshot({path: `artifacts/${name}.png`, fullPage: true});
 }
