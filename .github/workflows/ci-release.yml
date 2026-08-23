@@ -107,7 +107,7 @@ jobs:
               exit 1
             fi
             if [ "${sync}" = "Synced" ] && [ "${phase}" = "Succeeded" ]; then
-              kubectl -n argoflow-e2e get workflows,workflowtemplates,cronworkflows,eventsources,sensors,eventbus
+              kubectl -n argoflow-e2e get workflows,workflowtemplates,cronworkflows,eventsources,sensors,eventbus,serviceaccounts
               exit 0
             fi
             sleep 10
