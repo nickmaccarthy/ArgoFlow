@@ -126,7 +126,7 @@ jobs:
           echo $! > portforward.pid
           trap 'kill "$(cat portforward.pid)" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
-            if curl -skf "https://localhost:8090/healthz?full=true" >/dev/null; then break; fi
+            if curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null; then break; fi
             sleep 2
           done
           echo '--- /api/v1/extensions ---'
@@ -139,7 +139,7 @@ jobs:
           echo
           echo '--- argocd-server extension dir ---'
           kubectl -n argocd exec deploy/argocd-server -- sh -c 'ls -la /tmp/extensions; cat /shared/app/ui/extensions.sh 2>/dev/null | head -c 500' || true
-          curl -skf "https://localhost:8090/healthz?full=true" >/dev/null
+          curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null
           node scripts/e2e-smoke.mjs
 
       - name: Collect smoke evidence

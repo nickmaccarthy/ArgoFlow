@@ -16,8 +16,7 @@ import {mkdirSync} from 'node:fs';
 
 import puppeteer from 'puppeteer-core';
 
-const BASE_URL = process.env.ARGOCD_BASE_URL || 'https://localhost:8090';
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+const BASE_URL = process.env.ARGOCD_BASE_URL || 'https://127.0.0.1:8090';
 const ARGOCD_PASSWORD = process.env.ARGOCD_PASSWORD;
 const APP_NAME = 'argoflow-e2e';
 const WORKFLOW_NAME = 'argoflow-hello-e2e';
@@ -58,6 +57,22 @@ async function clickButtonWithText(page, text, timeoutMs = 120000) {
     target.click();
   }, text);
 }
+async function gotoWithRetry(page, url, attempts = 6) {
+  // kubectl port-forward tunnels drop intermittently on CI runners.
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 60000});
+      return;
+    } catch (error) {
+      lastError = error;
+      console.log(`[smoke] goto ${url} failed (attempt ${attempt}): ${String(error.message).split('\n')[0]}`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  }
+  throw lastError;
+}
+
 async function shot(page, name) {
   await page.screenshot({path: `artifacts/${name}.png`, fullPage: true});
 }
@@ -97,7 +112,7 @@ try {
   });
 
   log(`opening ${BASE_URL}`);
-  await page.goto(`${BASE_URL}/login`, {waitUntil: 'domcontentloaded'});
+  await gotoWithRetry(page, `${BASE_URL}/login`);
 
   // Login form: username is the non-password input inside the same form scope.
   await page.waitForSelector('input[type="password"]');
@@ -113,7 +128,7 @@ try {
   log('logged in as admin');
 
   // Open the fixture Application.
-  await page.goto(`${BASE_URL}/applications/${APP_NAME}`, {waitUntil: 'domcontentloaded'});
+  await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}`);
   await textExists(page, 'body', APP_NAME, 60000);
   log('application page loaded');
 
@@ -148,9 +163,7 @@ try {
 
   // Deep link straight into the Workflow resource extension tab and its DAG.
   const resourcePath = encodeURIComponent(`argoproj.io/Workflow/argoflow-e2e/${WORKFLOW_NAME}/0`);
-  await page.goto(`${BASE_URL}/applications/${APP_NAME}?view=Tree&resource=&node=${resourcePath}&tab=extension-0`, {
-    waitUntil: 'domcontentloaded'
-  });
+  await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}?view=Tree&resource=&node=${resourcePath}&tab=extension-0`);
   await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
   await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
   await shot(page, '03-workflow-dag');
