@@ -39,9 +39,17 @@ async function textExists(page, selector, text, timeoutMs) {
   );
 }
 
-async function clickButtonWithText(page, text) {
+async function clickButtonWithText(page, text, timeoutMs = 120000) {
+  // App-view extension tabs mount after the Application payload arrives; wait for them.
+  await page.waitForFunction(
+    label => [...document.querySelectorAll('button, a, [role="tab"]')]
+      .some(node => (node.textContent || '').trim() === label),
+    {timeout: timeoutMs},
+    text
+  );
   await page.evaluate(label => {
-    const target = [...document.querySelectorAll('button, a')].find(node => (node.textContent || '').trim() === label);
+    const target = [...document.querySelectorAll('button, a, [role="tab"]')]
+      .find(node => (node.textContent || '').trim() === label);
     if (!target) throw new Error(`No button or link labeled ${label}`);
     target.click();
   }, text);
