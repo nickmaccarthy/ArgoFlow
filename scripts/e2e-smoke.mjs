@@ -39,28 +39,35 @@ async function textExists(page, selector, text, timeoutMs) {
   );
 }
 
-async function clickExtensionTab(page, {text, icon}, timeoutMs = 120000) {
-  // App-view extension tabs render as icon-only buttons in the view switcher.
-  // Match on text, title/aria-label, or the Font Awesome icon class.
-  const matcher = needle => [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')].some(node => {
-    const visible = (node.textContent || '').trim();
-    const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
-    const iconNode = node.querySelector && node.querySelector('i');
-    const iconClass = iconNode ? String(iconNode.className) : '';
-    return visible === needle.label || named === needle.label || (!!needle.icon && iconClass.includes(needle.icon));
-  });
-  await page.waitForFunction(matcher, {timeout: timeoutMs, polling: 500}, {label: text, icon});
-  await page.evaluate(needle => {
-    const target = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')].find(node => {
-      const visible = (node.textContent || '').trim();
-      const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
-      const iconNode = node.querySelector && node.querySelector('i');
-      const iconClass = iconNode ? String(iconNode.className) : '';
-      return visible === needle.label || named === needle.label || (!!needle.icon && iconClass.includes(needle.icon));
-    });
-    if (!target) throw new Error(`No tab matching ${JSON.stringify(needle)}`);
-    target.click();
-  }, {label: text, icon});
+async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
+  // App-view extension toggles are div.application-details__view-type elements
+  // wrapping a Font Awesome icon. Poll from Node so every scan is observable.
+  const deadline = Date.now() + timeoutMs;
+  let last = {clicked: false, divs: -1, icons: -1, candidates: -1};
+  let scans = 0;
+  while (Date.now() < deadline) {
+    scans++;
+    last = await page.evaluate(needleIcon => {
+      const divs = document.querySelectorAll('.application-details__view-type').length;
+      const icons = document.querySelectorAll(`.${needleIcon}`).length;
+      const nodes = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')];
+      const target = nodes.find(node => {
+        const iconNode = node.querySelector ? node.querySelector('i') : null;
+        return iconNode ? String(iconNode.className).includes(needleIcon) : false;
+      });
+      if (target) {
+        target.click();
+        return {clicked: true, divs, icons, candidates: nodes.length};
+      }
+      return {clicked: false, divs, icons, candidates: nodes.length};
+    }, icon);
+    if (last.clicked) {
+      log(`clicked extension tab ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
+      return last;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  throw new Error(`Extension tab ${icon} not found after ${scans} scans; last scan: ${JSON.stringify(last)}`);
 }
 
 async function clickButtonWithText(page, text, timeoutMs = 120000) {
@@ -180,7 +187,7 @@ try {
   await shot(page, '00-application-page');
 
   // The Workflows app-view extension must render its bounded runs table.
-  await clickExtensionTab(page, {text: 'Workflows', icon: 'fa-project-diagram'});
+  await clickExtensionTab(page, {icon: 'fa-project-diagram'});
   await page.waitForSelector('#workflow-extension[aria-label="Workflow runs"]');
   await textExists(page, '#workflow-extension', 'Filters apply to this page', 30000);
 
@@ -191,7 +198,7 @@ try {
   log('workflows view rendered with the fixture run');
 
   // The Events app-view extension must render EventSource inventory.
-  await clickExtensionTab(page, {text: 'Events', icon: 'fa-bolt'});
+  await clickExtensionTab(page, {icon: 'fa-bolt'});
   await page.waitForSelector('#workflow-extension');
   await textExists(page, '#workflow-extension', 'EventSource', 60000);
   await shot(page, '02-events-view');
