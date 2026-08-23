@@ -33,7 +33,7 @@ function log(step) {
 async function textExists(page, selector, text, timeoutMs) {
   await page.waitForFunction(
     (sel, needle) => [...document.querySelectorAll(sel)].some(node => (node.textContent || '').includes(needle)),
-    {timeout: timeoutMs},
+    {timeout: timeoutMs, polling: 500},
     selector,
     text
   );
@@ -49,7 +49,7 @@ async function clickExtensionTab(page, {text, icon}, timeoutMs = 120000) {
     const iconClass = iconNode ? String(iconNode.className) : '';
     return visible === needle.label || named === needle.label || (!!needle.icon && iconClass.includes(needle.icon));
   });
-  await page.waitForFunction(matcher, {timeout: timeoutMs}, {label: text, icon});
+  await page.waitForFunction(matcher, {timeout: timeoutMs, polling: 500}, {label: text, icon});
   await page.evaluate(needle => {
     const target = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')].find(node => {
       const visible = (node.textContent || '').trim();
@@ -67,7 +67,7 @@ async function clickButtonWithText(page, text, timeoutMs = 120000) {
   await page.waitForFunction(
     label => [...document.querySelectorAll('button, a, [role="tab"]')]
       .some(node => (node.textContent || '').trim() === label),
-    {timeout: timeoutMs},
+    {timeout: timeoutMs, polling: 500},
     text
   );
   await page.evaluate(label => {
@@ -206,7 +206,7 @@ try {
 
   // Deep-link state: switching views writes namespaced hash keys.
   await clickButtonWithText(page, 'Grid');
-  await page.waitForFunction(() => location.hash.includes('argoflow:run.view=grid'), {timeout: 15000});
+  await page.waitForFunction(() => location.hash.includes('argoflow:run.view=grid'), {timeout: 15000, polling: 500});
   await shot(page, '04-workflow-grid-deeplink');
   log('resource tab DAG rendered and hash deep-linking works');
 
