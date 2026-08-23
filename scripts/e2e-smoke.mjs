@@ -39,21 +39,40 @@ async function textExists(page, selector, text, timeoutMs) {
   );
 }
 
-async function clickButtonWithText(page, text, timeoutMs = 120000) {
-  // App-view extension tabs render as icon-only buttons in the view switcher;
-  // their label lives in title/aria-label, not textContent.
-  const matcher = label => [...document.querySelectorAll('button, a, [role="tab"]')].some(node => {
+async function clickExtensionTab(page, {text, icon}, timeoutMs = 120000) {
+  // App-view extension tabs render as icon-only buttons in the view switcher.
+  // Match on text, title/aria-label, or the Font Awesome icon class.
+  const matcher = needle => [...document.querySelectorAll('button, a, [role="tab"]')].some(node => {
     const visible = (node.textContent || '').trim();
     const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
-    return visible === label || named === label;
+    const iconNode = node.querySelector && node.querySelector('i');
+    const iconClass = iconNode ? String(iconNode.className) : '';
+    return visible === needle.label || named === needle.label || (!!needle.icon && iconClass.includes(needle.icon));
   });
-  await page.waitForFunction(matcher, {timeout: timeoutMs}, text);
-  await page.evaluate(label => {
+  await page.waitForFunction(matcher, {timeout: timeoutMs}, {label: text, icon});
+  await page.evaluate(needle => {
     const target = [...document.querySelectorAll('button, a, [role="tab"]')].find(node => {
       const visible = (node.textContent || '').trim();
       const named = ((node.getAttribute && node.getAttribute('title')) || (node.getAttribute && node.getAttribute('aria-label')) || '').trim();
-      return visible === label || named === label;
+      const iconNode = node.querySelector && node.querySelector('i');
+      const iconClass = iconNode ? String(iconNode.className) : '';
+      return visible === needle.label || named === needle.label || (!!needle.icon && iconClass.includes(needle.icon));
     });
+    if (!target) throw new Error(`No tab matching ${JSON.stringify(needle)}`);
+    target.click();
+  }, {label: text, icon});
+}
+
+async function clickButtonWithText(page, text, timeoutMs = 120000) {
+  await page.waitForFunction(
+    label => [...document.querySelectorAll('button, a, [role="tab"]')]
+      .some(node => (node.textContent || '').trim() === label),
+    {timeout: timeoutMs},
+    text
+  );
+  await page.evaluate(label => {
+    const target = [...document.querySelectorAll('button, a, [role="tab"]')]
+      .find(node => (node.textContent || '').trim() === label);
     if (!target) throw new Error(`No button or link labeled ${label}`);
     target.click();
   }, text);
@@ -139,13 +158,19 @@ try {
     extensionScripts: [...document.querySelectorAll('script')].map(script => script.getAttribute('src')).filter(src => src && src.includes('extension')),
     extensionsApiType: typeof window.extensionsAPI,
     tabLikeTexts: [...document.querySelectorAll('[class*="tab" i], [role="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 80),
+    switcherButtons: [...document.querySelectorAll('button')].map(button => ({
+      text: (button.textContent || '').trim().slice(0, 24),
+      title: button.getAttribute('title'),
+      ariaLabel: button.getAttribute('aria-label'),
+      icon: button.querySelector('i') ? String(button.querySelector('i').className).slice(0, 80) : ''
+    })).filter(info => info.title || info.ariaLabel || info.icon).slice(0, 40),
     telemetryCount: (window.__argoflowTelemetry || []).length
   }));
   console.log(`[smoke] diagnostics ${JSON.stringify(diagnostics, null, 2)}`);
   await shot(page, '00-application-page');
 
   // The Workflows app-view extension must render its bounded runs table.
-  await clickButtonWithText(page, 'Workflows');
+  await clickExtensionTab(page, {text: 'Workflows', icon: 'fa-project-diagram'});
   await page.waitForSelector('#workflow-extension[aria-label="Workflow runs"]');
   await textExists(page, '#workflow-extension', 'Filters apply to this page', 30000);
 
@@ -156,7 +181,7 @@ try {
   log('workflows view rendered with the fixture run');
 
   // The Events app-view extension must render EventSource inventory.
-  await clickButtonWithText(page, 'Events');
+  await clickExtensionTab(page, {text: 'Events', icon: 'fa-bolt'});
   await page.waitForSelector('#workflow-extension');
   await textExists(page, '#workflow-extension', 'EventSource', 60000);
   await shot(page, '02-events-view');
