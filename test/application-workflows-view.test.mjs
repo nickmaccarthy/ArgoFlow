@@ -3,10 +3,12 @@ import test from 'node:test';
 
 import {
   DEFAULT_RUN_FILTERS,
+  RUN_AUTO_REFRESH_INTERVAL_MS,
   cursorForApplication,
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
+  shouldAutoRefreshRunPage,
   workflowApplicationKey,
   workflowRunHref,
   workflowRunSourceText
@@ -82,4 +84,23 @@ test('uses explicit source text and native accessible controls in the applicatio
   assert.match(source, /background: rgb\(16, 15, 15\)/);
   assert.match(source, /React\.createElement\('style', null, WORKFLOW_EXTENSION_STYLES\)/);
   assert.match(source, /loadWorkflowRunPage\(\{application, tree, archive, baseUrl, cursor, fetcher, signal: controller\.signal, source\}\)/);
+});
+
+test('auto-refresh ticks only for visible tabs holding active runs', () => {
+  assert.equal(shouldAutoRefreshRunPage(rows), true); // rows[0] is Running
+  assert.equal(shouldAutoRefreshRunPage([rows[1]]), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, true), false);
+  assert.equal(shouldAutoRefreshRunPage([], false), false);
+  assert.equal(typeof RUN_AUTO_REFRESH_INTERVAL_MS, 'number');
+  assert.ok(RUN_AUTO_REFRESH_INTERVAL_MS >= 5000);
+});
+
+test('run filters and cursors round-trip through namespaced hash state', async () => {
+  const {parseHashState} = await import('../src/url-state.ts');
+  const hash = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c2&argoflow:runs.phase=Running&argoflow:runs.query=pay';
+  const state = parseHashState(hash);
+  assert.equal(state['runs.source'], 'Archive');
+  assert.equal(state['runs.cursor'], 'c2');
+  assert.equal(state['runs.phase'], 'Running');
+  assert.equal(state['runs.query'], 'pay');
 });
