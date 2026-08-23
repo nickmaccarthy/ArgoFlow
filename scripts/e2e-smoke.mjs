@@ -50,18 +50,23 @@ async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
     last = await page.evaluate(needleIcon => {
       const divs = document.querySelectorAll('.application-details__view-type').length;
       const icons = document.querySelectorAll(`.${needleIcon}`).length;
-      const nodes = [...document.querySelectorAll('button, a, [role="tab"], .application-details__view-type')];
-      const target = nodes.find(node => {
+      const nodes = [...document.querySelectorAll('.application-details__view-type')];
+      const index = nodes.findIndex(node => {
         if (!node.querySelectorAll) return false;
         return [...node.querySelectorAll('i')].some(iconNode => String(iconNode.className).includes(needleIcon));
       });
-      if (target) {
-        target.click();
-        return {clicked: true, divs, icons, candidates: nodes.length};
-      }
-      return {clicked: false, divs, icons, candidates: nodes.length};
+      return {found: index >= 0, index, divs, icons, candidates: nodes.length};
     }, icon);
-    if (last.clicked) {
+    if (last.found) {
+      // React's synthetic event system responds to real input; use the mouse.
+      const handles = await page.$$('.application-details__view-type');
+      const handle = handles[last.index];
+      const box = await handle.boundingBox();
+      if (box) {
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      } else {
+        await handle.click();
+      }
       log(`clicked extension tab ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
       return last;
     }
