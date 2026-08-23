@@ -164,7 +164,17 @@ try {
       ariaLabel: button.getAttribute('aria-label'),
       icon: button.querySelector('i') ? String(button.querySelector('i').className).slice(0, 80) : ''
     })).filter(info => info.title || info.ariaLabel || info.icon).slice(0, 40),
-    telemetryCount: (window.__argoflowTelemetry || []).length
+    telemetryCount: (window.__argoflowTelemetry || []).length,
+    iconProbe: ['fa-bolt', 'fa-project-diagram'].map(cls => ({
+      cls,
+      matches: [...document.querySelectorAll(`.${cls}`)].map(element => ({
+        tag: element.tagName,
+        cls: String(element.className).slice(0, 80),
+        parentTag: element.parentElement ? element.parentElement.tagName : '',
+        parentCls: String((element.parentElement && element.parentElement.className) || '').slice(0, 100),
+        text: element.parentElement ? (element.parentElement.textContent || '').trim().slice(0, 40) : ''
+      })).slice(0, 10)
+    })),
   }));
   console.log(`[smoke] diagnostics ${JSON.stringify(diagnostics, null, 2)}`);
   await shot(page, '00-application-page');
