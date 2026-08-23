@@ -54,6 +54,7 @@ jobs:
         run: |
           # Server-side apply: several bundled CRDs exceed the 256 KiB
           # client-side last-applied-configuration annotation limit.
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply --server-side -n argocd -f "https://raw.githubusercontent.com/argoproj/argo-cd/${{ matrix.argocd }}/manifests/install.yaml"
           kubectl -n argocd rollout status deploy/argocd-server --timeout=420s
 
