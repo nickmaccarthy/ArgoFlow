@@ -1,4 +1,7 @@
-export const EXTENSION_VERSION = '0.4.0';
+declare const __ARGOFLOW_VERSION__: string;
+
+/** Injected by webpack DefinePlugin from package.json; 'unversioned' outside builds (tests). */
+export const EXTENSION_VERSION = typeof __ARGOFLOW_VERSION__ === 'string' ? __ARGOFLOW_VERSION__ : 'unversioned';
 export const TELEMETRY_EVENT = 'argocd-workflows-extension:telemetry';
 const TELEMETRY_EVENTS = ['extension.loaded', 'workflow.ready', 'run-page.loaded', 'run-page.failed', 'event-resource.loaded', 'event-chain.query', 'event-chain.loaded', 'render.failed'] as const;
 const FEATURES = ['live-runs', 'archive-runs', 'workflow-dag', 'workflow-list', 'workflow-grid', 'resource-workflow', 'resource-template', 'resource-cron', 'resource-event-source', 'resource-sensor', 'resource-event-bus', 'event-chain', 'application-events'] as const;
