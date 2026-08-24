@@ -22,7 +22,7 @@ export interface ApplicationContext {
   uid?: string;
 }
 
-/** The shallow fields Argo CD supplies in Application tree.nodes. */
+/** The shallow fields Argo CD supplies in Application tree resource nodes. */
 export interface WorkflowIdentity {
   name: string;
   namespace?: string;
@@ -41,6 +41,7 @@ export interface WorkflowIdentity {
 
 export interface WorkflowTree {
   nodes?: Array<Partial<WorkflowIdentity> & {apiVersion?: string}>;
+  orphanedNodes?: Array<Partial<WorkflowIdentity> & {apiVersion?: string}>;
   error?: QueryError | string;
 }
 
@@ -225,12 +226,16 @@ function cursorPosition(items: WorkflowIdentity[], cursor?: string): number {
 }
 
 export function workflowTreeIdentities(tree: WorkflowTree | WorkflowTree['nodes'] = []): WorkflowIdentity[] {
-  const nodes = Array.isArray(tree) ? tree : tree.nodes || [];
-  return nodes
+  const nodes = Array.isArray(tree) ? tree : [...(tree.nodes || []), ...(tree.orphanedNodes || [])];
+  const identities = new Map<string, WorkflowIdentity>();
+  for (const identity of nodes
     .filter(node => (text(node.kind) || 'Workflow') === 'Workflow' && (text(node.group) || node.apiVersion?.split('/')[0] || 'argoproj.io') === 'argoproj.io')
     .map(asIdentity)
-    .filter((node): node is WorkflowIdentity => Boolean(node))
-    .sort(compareIdentity);
+    .filter((node): node is WorkflowIdentity => Boolean(node))) {
+    const key = identityKey(identity);
+    if (!identities.has(key)) identities.set(key, identity);
+  }
+  return [...identities.values()].sort(compareIdentity);
 }
 
 export function pageWorkflowIdentities(
