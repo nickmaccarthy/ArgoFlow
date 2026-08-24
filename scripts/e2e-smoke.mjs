@@ -244,7 +244,23 @@ try {
   // Deep link straight into the Workflow resource extension tab and its DAG.
   const resourcePath = encodeURIComponent(`argoproj.io/Workflow/argoflow-e2e/${WORKFLOW_NAME}/0`);
   await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}?view=Tree&resource=&node=${resourcePath}&tab=extension-0`);
-  await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
+  try {
+    await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
+  } catch (error) {
+    // Decisive evidence: distinguishes panel-not-open vs wrong tab vs
+    // extension stuck in a notice state.
+    log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
+      href: location.href,
+      panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
+      panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
+      tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
+      wfExtensionMounted: !!document.querySelector('#workflow-extension'),
+      wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
+      dagShell: !!document.querySelector('.wf-dag-shell')
+    }))));
+    await shot(page, '03-deeplink-failure');
+    throw error;
+  }
   await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
   await shot(page, '03-workflow-dag');
 
