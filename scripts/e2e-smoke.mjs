@@ -62,8 +62,11 @@ async function textExists(page, selector, text, timeoutMs) {
 }
 
 async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
-  // App-view extension toggles are div.application-details__view-type elements
-  // wrapping a Font Awesome icon. Poll from Node so every scan is observable.
+  // App-view extension toggles are <i> Font Awesome icons INSIDE the shared
+  // div.application-details__view-type container. The container spans the
+  // whole toggle row and carries no onClick — only each <i> does — so clicking
+  // the container's center lands on a built-in view toggle (tree/network/
+  // pods) and the extension never mounts. Target the <i> itself.
   const deadline = Date.now() + timeoutMs;
   let last = {clicked: false, divs: -1, icons: -1, candidates: -1};
   let scans = 0;
@@ -72,24 +75,31 @@ async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
     last = await page.evaluate(needleIcon => {
       const divs = document.querySelectorAll('.application-details__view-type').length;
       const icons = document.querySelectorAll(`.${needleIcon}`).length;
-      const nodes = [...document.querySelectorAll('.application-details__view-type')];
-      const index = nodes.findIndex(node => {
-        if (!node.querySelectorAll) return false;
-        return [...node.querySelectorAll('i')].some(iconNode => String(iconNode.className).includes(needleIcon));
-      });
-      return {found: index >= 0, index, divs, icons, candidates: nodes.length};
+      const nodes = [...document.querySelectorAll(`.application-details__view-type i.${needleIcon}`)];
+      return {found: nodes.length > 0, index: 0, divs, icons, candidates: nodes.length};
     }, icon);
     if (last.found) {
-      // React's synthetic event system responds to real input; use the mouse.
-      const handles = await page.$$('.application-details__view-type');
-      const handle = handles[last.index];
+      // React's synthetic event system responds to real input; use the mouse
+      // on the icon's own box.
+      const handles = await page.$$('.application-details__view-type i.' + icon);
+      const handle = handles[0];
       const box = await handle.boundingBox();
       if (box) {
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       } else {
         await handle.click();
       }
-      log(`clicked extension tab ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
+      log(`clicked extension tab icon ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
+      // Evidence dump: Argo CD's toggle handler navigates to ?view=<title>;
+      // if the panel still fails to mount this shows whether the switch
+      // registered and which toggle is marked selected.
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      log('after-click ' + JSON.stringify(await page.evaluate(() => ({
+        href: location.href,
+        viewParam: new URLSearchParams(location.search).get('view'),
+        selectedToggles: [...document.querySelectorAll('.application-details__view-type i.selected, .application-details__view-type i[class*="selected"]')].map(node => node.title || node.className),
+        extensionMounted: !!document.querySelector('#workflow-extension')
+      }))));
       return last;
     }
     await new Promise(resolve => setTimeout(resolve, 2000));
