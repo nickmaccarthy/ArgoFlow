@@ -65,7 +65,7 @@ test('formats scannable ages and links runs to their Argo CD resource extension'
   assert.equal(formatRunAge('invalid', Date.now()), '—');
   assert.equal(
     workflowRunHref(rows[0], '/applications/workflows-extension-demo'),
-    '/applications/workflows-extension-demo?view=Tree&resource=&node=argoproj.io%2FWorkflow%2Fpayments%2Fpayment-1%2F0&tab=extension-0'
+    '/applications/workflows-extension-demo?view=tree&resource=&node=argoproj.io%2FWorkflow%2Fpayments%2Fpayment-1%2F0&tab=extension-0'
   );
 });
 
