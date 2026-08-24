@@ -2,7 +2,7 @@ import React from 'react';
 
 import {WORKFLOW_PHASES, type WorkflowManifest, type WorkflowPhase} from './workflow-resource';
 import {WorkflowDagView} from './workflow-dag-view';
-import {filterWorkflowNodes, normalizeWorkflowNodes, orderWorkflowNodesForDisplay} from './workflow-nodes';
+import {decodeNodePhases, encodeNodePhases, filterWorkflowNodes, NODE_PHASES_HASH_KEY, normalizeWorkflowNodes, orderWorkflowNodesForDisplay} from './workflow-nodes';
 import type {WorkflowNode} from './workflow-nodes';
 import {WorkflowNodeDetails, WorkflowNodeFilters, WorkflowNodeGrid, WorkflowNodeList} from './workflow-nodes-view';
 import {emitExtensionTelemetry} from './telemetry';
@@ -25,7 +25,7 @@ export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManife
   const defaultView: WorkspaceViewMode = largeWorkflow ? 'list' : 'dag';
   const [view, setView] = React.useState<WorkspaceViewMode>(() => coerceWorkspaceView(hashState['run.view'], largeWorkflow));
   const [query, setQueryRaw] = React.useState<string>(() => hashState['run.q'] ?? '');
-  const [phases, setPhases] = React.useState<WorkflowPhase[]>([]);
+  const [phases, setPhasesState] = React.useState<WorkflowPhase[]>(() => decodeNodePhases(hashState[NODE_PHASES_HASH_KEY]));
   const [selectedId, setSelectedId] = React.useState<string | undefined>(() => {
     const linked = hashState['run.node'];
     if (linked && nodes.some(node => node.id === linked)) return linked;
@@ -52,6 +52,12 @@ export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManife
   const setQuery = (value: string) => {
     setQueryRaw(value);
     patchHash({'run.q': value || undefined});
+  };
+  // Both filter surfaces route through this wrapper so an active phase
+  // selection survives a copied URL / hard reload (issue #6).
+  const changePhases = (next: WorkflowPhase[]) => {
+    setPhasesState(next);
+    patchHash({[NODE_PHASES_HASH_KEY]: encodeNodePhases(next)});
   };
 
   React.useEffect(() => emitExtensionTelemetry('workflow.ready', {
@@ -85,14 +91,14 @@ export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManife
           selectedPhases={phases}
           phases={[...WORKFLOW_PHASES, 'Unknown']}
           setQuery={setQuery}
-          setPhases={setPhases}
+          setPhases={changePhases}
         />
       </div>
       {largeWorkflow ? <p id="large-workflow-notice" role="status">DAG is disabled above {DAG_NODE_LIMIT} nodes; use List for details or Grid for the full status overview.</p> : null}
       {view === 'dag' && !largeWorkflow ? (
         <WorkflowDagView nodes={filtered} selectedId={selectedId} onSelect={selectNode} />
       ) : view === 'grid' ? (
-        <WorkflowNodeGrid nodes={filtered} selectedId={selectedId} onSelect={selectNode} onFilterPhases={setPhases} />
+        <WorkflowNodeGrid nodes={filtered} selectedId={selectedId} onSelect={selectNode} onFilterPhases={changePhases} />
       ) : (
         <WorkflowNodeList nodes={filtered} onSelect={selectNode} />
       )}
