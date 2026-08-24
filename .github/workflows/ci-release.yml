@@ -118,9 +118,9 @@ jobs:
 
       - name: Run UI smoke test
         timeout-minutes: 10
-        # Smoke assertions are still stabilizing; failures surface in the step
-        # result and artifacts without blocking the compatibility gate.
-        continue-on-error: true
+        # Registration/rendering/telemetry failures must turn this job red
+        # (issue #11). Only the view-switch toggle click stays warn-only while
+        # it stabilizes; flip ARGOFLOW_SMOKE_STRICT=1 to block on it too.
         run: |
           set -euo pipefail
           ARGOCD_PASSWORD="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
@@ -169,7 +169,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Build with the version semantic-release is about to publish, not the
+      # stale checked-in package.json value (see scripts/compute-next-version.mjs).
+      - name: Compute the upcoming release version
+        id: version
+        run: echo "version=$(node scripts/compute-next-version.mjs | tail -1)" >> "$GITHUB_OUTPUT"
       - run: npm run build
+        env:
+          ARGOFLOW_VERSION: ${{ steps.version.outputs.version }}
       - run: npm run package:release
       - run: npm run release
         env:
