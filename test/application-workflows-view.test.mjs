@@ -86,13 +86,29 @@ test('uses explicit source text and native accessible controls in the applicatio
   assert.match(source, /loadWorkflowRunPage\(\{application, tree, archive, baseUrl, cursor, fetcher, signal: controller\.signal, source\}\)/);
 });
 
-test('auto-refresh ticks only for visible tabs holding active runs', () => {
+test('auto-refresh ticks only for visible tabs holding active runs on healthy pages', () => {
   assert.equal(shouldAutoRefreshRunPage(rows), true); // rows[0] is Running
   assert.equal(shouldAutoRefreshRunPage([rows[1]]), false);
   assert.equal(shouldAutoRefreshRunPage(rows, true), false);
   assert.equal(shouldAutoRefreshRunPage([], false), false);
+  // A refresh failure retains the prior page (with its active rows): polling must stop.
+  assert.equal(shouldAutoRefreshRunPage(rows, false, 'boom'), false);
+  // Errored, permission-limited, and unavailable pages generate zero traffic.
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'error'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'permission'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'unavailable'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'ready'), true);
   assert.equal(typeof RUN_AUTO_REFRESH_INTERVAL_MS, 'number');
   assert.ok(RUN_AUTO_REFRESH_INTERVAL_MS >= 5000);
+});
+
+test('returning to a visible tab refreshes immediately via a hidden-state transition', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/application-workflows-view.ts', import.meta.url), 'utf8'));
+  // The immediate-refresh bump keys off the hidden state change itself; the
+  // visibilitychange listener inside the interval effect was removed because
+  // it is uninstalled while hidden and misses its own wake-up event.
+  assert.match(source, /if \(wasHidden && !hidden && autoRefresh\) setRefreshToken\(value => value \+ 1\)/);
+  assert.doesNotMatch(source, /const onVisible = \(\) =>/);
 });
 
 test('run filters and cursors round-trip through namespaced hash state', async () => {

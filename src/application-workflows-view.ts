@@ -28,9 +28,16 @@ export const DEFAULT_RUN_FILTERS: RunFilters = {
 
 export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
 
-/** True when polling should tick: tab visible and at least one active run on the bounded page. */
-export function shouldAutoRefreshRunPage(rows: readonly WorkflowRunRow[], hidden?: boolean): boolean {
-  return hidden !== true && rows.some(isActiveWorkflowRun);
+/**
+ * True when polling should tick: tab visible, no error on the current page,
+ * a healthy page state, and at least one active run on the bounded page.
+ * Errored, permission-limited, and unavailable pages generate zero traffic
+ * (issue #4); a retained prior page must not keep polling after a failure.
+ */
+export function shouldAutoRefreshRunPage(rows: readonly WorkflowRunRow[], hidden?: boolean, error?: string, state?: RunPage['state']): boolean {
+  if (hidden === true || error) return false;
+  if (state === 'permission' || state === 'error' || state === 'unavailable') return false;
+  return rows.some(isActiveWorkflowRun);
 }
 
 export function workflowApplicationKey(application?: ApplicationViewExtensionProps['application']): string {
@@ -406,20 +413,24 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     return () => document.removeEventListener('visibilitychange', syncVisibility);
   }, []);
 
-  const autoRefresh = shouldAutoRefreshRunPage(page?.rows ?? [], hidden);
+  const autoRefresh = shouldAutoRefreshRunPage(page?.rows ?? [], hidden, error, page?.state);
 
   React.useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => setRefreshToken(value => value + 1), RUN_AUTO_REFRESH_INTERVAL_MS);
-    const onVisible = () => {
-      if (!document.hidden) setRefreshToken(value => value + 1);
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
+    return () => window.clearInterval(timer);
   }, [autoRefresh]);
+
+  // A hidden->visible transition fires before effects re-install their
+  // listeners, so the promised immediate refresh keys off the hidden state
+  // change itself rather than a visibilitychange listener owned by the
+  // interval effect (whose first tick would otherwise land one period later).
+  const wasHiddenRef = React.useRef(hidden);
+  React.useEffect(() => {
+    const wasHidden = wasHiddenRef.current;
+    wasHiddenRef.current = hidden;
+    if (wasHidden && !hidden && autoRefresh) setRefreshToken(value => value + 1);
+  }, [hidden, autoRefresh]);
 
   // Distinguishes a pure refresh tick from changed inputs: only input changes clear the page.
   const requestKey = `${applicationKey}|${source}|${cursor ?? ''}`;
