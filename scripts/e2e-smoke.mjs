@@ -61,6 +61,21 @@ async function textExists(page, selector, text, timeoutMs) {
   );
 }
 
+/**
+ * Anonymous-only telemetry with the expected lifecycle events. The deep-link
+ * phase loads a fresh document, so run-page.loaded (app view only) is asserted
+ * per phase rather than at the end of the run.
+ */
+function assertTelemetryContract(events, {requireRunPage = false} = {}) {
+  assert(events.some(event => event.event === 'extension.loaded'), 'expected extension.loaded telemetry');
+  if (requireRunPage) assert(events.some(event => event.event === 'run-page.loaded'), 'expected run-page.loaded telemetry');
+  assert(events.some(event => event.event === 'workflow.ready'), 'expected workflow.ready telemetry');
+  assert(!events.some(event => event.event === 'render.failed'), 'render.failed telemetry must stay absent');
+  for (const event of events) {
+    assert(!/payments|secret|bearer|token|namespace/i.test(JSON.stringify(event)), `telemetry leaked resource data: ${JSON.stringify(event)}`);
+  }
+}
+
 async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
   // App-view extension toggles are <i> Font Awesome icons INSIDE the shared
   // div.application-details__view-type container. The container spans the
@@ -234,6 +249,12 @@ try {
   await shot(page, '01-workflows-view');
   log('workflows view rendered with the fixture run');
 
+  // App-view telemetry contract, asserted in THIS document: the deep-link
+  // navigation below replaces the document and unmounts the app view, so
+  // run-page.loaded can only ever be observed here.
+  assertTelemetryContract(await page.evaluate(() => window.__argoflowTelemetry || []), {requireRunPage: true});
+  log('app-view telemetry contract verified');
+
   // The Events app-view extension must render EventSource inventory.
   await clickExtensionTab(page, {icon: 'fa-bolt'});
   await page.waitForSelector('#workflow-extension');
@@ -243,7 +264,7 @@ try {
 
   // Deep link straight into the Workflow resource extension tab and its DAG.
   const resourcePath = encodeURIComponent(`argoproj.io/Workflow/argoflow-e2e/${WORKFLOW_NAME}/0`);
-  await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}?view=Tree&resource=&node=${resourcePath}&tab=extension-0`);
+  await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}?view=tree&resource=&node=${resourcePath}&tab=extension-0`);
   try {
     await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
   } catch (error) {
@@ -275,15 +296,10 @@ try {
   });
   log('resource tab DAG rendered');
 
-  // Telemetry contract: anonymous events only, with the expected lifecycle events.
+  // Resource-tab document: fresh load after the deep link, so only the
+  // extension lifecycle events of THIS document are asserted here.
   const events = await page.evaluate(() => window.__argoflowTelemetry || []);
-  assert(events.some(event => event.event === 'extension.loaded'), 'expected extension.loaded telemetry');
-  assert(events.some(event => event.event === 'run-page.loaded'), 'expected run-page.loaded telemetry');
-  assert(events.some(event => event.event === 'workflow.ready'), 'expected workflow.ready telemetry');
-  assert(!events.some(event => event.event === 'render.failed'), 'render.failed telemetry must stay absent');
-  for (const event of events) {
-    assert(!/payments|secret|bearer|token|namespace/i.test(JSON.stringify(event)), `telemetry leaked resource data: ${JSON.stringify(event)}`);
-  }
+  assertTelemetryContract(events);
   console.log('[smoke] telemetry contract verified:', JSON.stringify(events));
 
   console.log('[smoke] PASS');
