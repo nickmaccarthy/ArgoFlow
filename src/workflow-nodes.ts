@@ -178,9 +178,11 @@ const NODE_PHASES_ALLOWED: Record<string, true> = {
   Unknown: true
 } satisfies Record<WorkflowPhase, true>;
 
+/** Bare Record lookup also matches Object.prototype names like 'toString', so membership uses hasOwnProperty. */
+
 /** Serializes selected node-phase filters; an empty selection stays out of the hash. */
 export function encodeNodePhases(phases: readonly WorkflowPhase[]): string | undefined {
-  const unique = [...new Set(phases)].filter(phase => NODE_PHASES_ALLOWED[phase]);
+  const unique = [...new Set(phases)].filter(phase => Object.prototype.hasOwnProperty.call(NODE_PHASES_ALLOWED, phase));
   return unique.length ? unique.join(',') : undefined;
 }
 
@@ -190,7 +192,7 @@ export function encodeNodePhases(phases: readonly WorkflowPhase[]): string | und
  */
 export function decodeNodePhases(value: string | undefined): WorkflowPhase[] {
   if (!value) return [];
-  return [...new Set(value.split(',').map(phase => phase.trim()).filter(phase => NODE_PHASES_ALLOWED[phase]))] as WorkflowPhase[];
+  return [...new Set(value.split(',').map(phase => phase.trim()).filter(phase => Object.prototype.hasOwnProperty.call(NODE_PHASES_ALLOWED, phase)))] as WorkflowPhase[];
 }
 
 function safeIo(io?: WorkflowIo): SafeIoMetadata {

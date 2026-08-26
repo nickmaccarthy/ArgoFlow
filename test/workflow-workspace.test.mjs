@@ -27,6 +27,8 @@ test('phase decode drops unknown and malformed values instead of breaking the vi
   assert.deepEqual(decodeNodePhases(''), []);
   assert.deepEqual(decodeNodePhases('Running,bogus,, Failed ,Succeeded'), ['Running', 'Failed', 'Succeeded']);
   assert.deepEqual(decodeNodePhases('bogus'), []);
+  // Object.prototype names must not pass the membership check.
+  assert.deepEqual(decodeNodePhases('toString,constructor,hasOwnProperty,Running'), ['Running']);
   // Every workflow phase plus the synthetic Unknown are accepted.
   assert.deepEqual(decodeNodePhases('Pending,Running,Succeeded,Failed,Error,Skipped,Omitted,Unknown'),
     ['Pending', 'Running', 'Succeeded', 'Failed', 'Error', 'Skipped', 'Omitted', 'Unknown']);
