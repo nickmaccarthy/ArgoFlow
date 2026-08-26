@@ -274,35 +274,45 @@ try {
   log('events view rendered');
 
   // Deep link straight into the Workflow resource extension tab and its DAG.
+  // Argo CD's background application refresh can transiently drop the
+  // extension content (a failed live-state fetch omits extension tabs until
+  // the next render), so one navigation retry is allowed before failing.
   const resourcePath = encodeURIComponent(`argoproj.io/Workflow/argoflow-e2e/${WORKFLOW_NAME}/0`);
-  await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}?view=tree&resource=&node=${resourcePath}&tab=extension-0`);
-  try {
-    await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
-  } catch (error) {
-    // Decisive evidence: distinguishes panel-not-open vs wrong tab vs
-    // extension stuck in a notice state. Diagnostics are best-effort — a
-    // failed dump or screenshot must never replace the original failure.
+  const deepLinkUrl = `${BASE_URL}/applications/${APP_NAME}?view=tree&resource=&node=${resourcePath}&tab=extension-0`;
+  let deepLinkAttempt = 0;
+  for (;;) {
+    deepLinkAttempt++;
     try {
-      log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
-        href: location.href,
-        panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
-        panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
-        tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
-        wfExtensionMounted: !!document.querySelector('#workflow-extension'),
-        wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
-        dagShell: !!document.querySelector('.wf-dag-shell')
-      }))));
-    } catch (dumpError) {
-      log(`deep-link failure dump itself failed: ${dumpError.message}`);
+      await gotoWithRetry(page, deepLinkUrl);
+      await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
+      await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
+      break;
+    } catch (error) {
+      // Decisive evidence: distinguishes panel-not-open vs wrong tab vs
+      // extension stuck in a notice state. Diagnostics are best-effort — a
+      // failed dump or screenshot must never replace the original failure.
+      try {
+        log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
+          href: location.href,
+          panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
+          panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
+          tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
+          wfExtensionMounted: !!document.querySelector('#workflow-extension'),
+          wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
+          dagShell: !!document.querySelector('.wf-dag-shell')
+        }))));
+      } catch (dumpError) {
+        log(`deep-link failure dump itself failed: ${dumpError.message}`);
+      }
+      try {
+        await shot(page, '03-deeplink-failure');
+      } catch (shotError) {
+        log(`deep-link failure screenshot failed: ${shotError.message}`);
+      }
+      if (deepLinkAttempt >= 2) throw error;
+      log(`deep-link attempt ${deepLinkAttempt} failed (${error.message.split('\n')[0]}); retrying navigation once`);
     }
-    try {
-      await shot(page, '03-deeplink-failure');
-    } catch (shotError) {
-      log(`deep-link failure screenshot failed: ${shotError.message}`);
-    }
-    throw error;
   }
-  await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
   await shot(page, '03-workflow-dag');
 
   // Deep-link state: switching views writes namespaced hash keys. This single
