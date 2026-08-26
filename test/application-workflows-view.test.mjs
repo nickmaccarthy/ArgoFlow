@@ -3,10 +3,12 @@ import test from 'node:test';
 
 import {
   DEFAULT_RUN_FILTERS,
+  RUN_AUTO_REFRESH_INTERVAL_MS,
   cursorForApplication,
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
+  shouldAutoRefreshRunPage,
   workflowApplicationKey,
   workflowRunHref,
   workflowRunSourceText
@@ -63,7 +65,7 @@ test('formats scannable ages and links runs to their Argo CD resource extension'
   assert.equal(formatRunAge('invalid', Date.now()), '—');
   assert.equal(
     workflowRunHref(rows[0], '/applications/workflows-extension-demo'),
-    '/applications/workflows-extension-demo?view=Tree&resource=&node=argoproj.io%2FWorkflow%2Fpayments%2Fpayment-1%2F0&tab=extension-0'
+    '/applications/workflows-extension-demo?view=tree&resource=&node=argoproj.io%2FWorkflow%2Fpayments%2Fpayment-1%2F0&tab=extension-0'
   );
 });
 
@@ -82,4 +84,50 @@ test('uses explicit source text and native accessible controls in the applicatio
   assert.match(source, /background: rgb\(16, 15, 15\)/);
   assert.match(source, /React\.createElement\('style', null, WORKFLOW_EXTENSION_STYLES\)/);
   assert.match(source, /loadWorkflowRunPage\(\{application, tree, archive, baseUrl, cursor, fetcher, signal: controller\.signal, source\}\)/);
+});
+
+test('auto-refresh ticks only for visible tabs holding active runs on healthy pages', () => {
+  assert.equal(shouldAutoRefreshRunPage(rows), true); // rows[0] is Running
+  assert.equal(shouldAutoRefreshRunPage([rows[1]]), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, true), false);
+  assert.equal(shouldAutoRefreshRunPage([], false), false);
+  // A refresh failure retains the prior page (with its active rows): polling must stop.
+  assert.equal(shouldAutoRefreshRunPage(rows, false, 'boom'), false);
+  // Errored, permission-limited, and unavailable pages generate zero traffic.
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'error'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'permission'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'unavailable'), false);
+  assert.equal(shouldAutoRefreshRunPage(rows, false, undefined, 'ready'), true);
+  assert.equal(typeof RUN_AUTO_REFRESH_INTERVAL_MS, 'number');
+  assert.ok(RUN_AUTO_REFRESH_INTERVAL_MS >= 5000);
+});
+
+test('auto-refresh stands down while a request is loading and reconciles hash navigation', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/application-workflows-view.ts', import.meta.url), 'utf8'));
+  // A tick during an in-flight request bumps refreshToken, whose cleanup
+  // aborts that request: responses slower than one period would never settle.
+  assert.match(source, /if \(!autoRefresh \|\| loading\) return undefined;/);
+  assert.match(source, /\}, \[autoRefresh, loading\]\);/);
+  // The immediate-refresh bump keys off the hidden state change itself.
+  assert.match(source, /if \(wasHidden && !hidden && autoRefresh\) setRefreshToken\(value => value \+ 1\)/);
+  assert.doesNotMatch(source, /const onVisible = \(\) =>/);
+});
+
+test('hash state re-reads every navigation instead of trusting written hashes', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/url-state.ts', import.meta.url), 'utf8'));
+  // Back/forward can return to a hash the hook wrote earlier; the handler must
+  // not skip it, and its own replaceState never fires hashchange so no guard
+  // is needed against self-writes.
+  assert.match(source, /const next = parseHashState\(window\.location\.hash\);/);
+  assert.doesNotMatch(source, /writtenRef/);
+});
+
+test('run filters and cursors round-trip through namespaced hash state', async () => {
+  const {parseHashState} = await import('../src/url-state.ts');
+  const hash = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c2&argoflow:runs.phase=Running&argoflow:runs.query=pay';
+  const state = parseHashState(hash);
+  assert.equal(state['runs.source'], 'Archive');
+  assert.equal(state['runs.cursor'], 'c2');
+  assert.equal(state['runs.phase'], 'Running');
+  assert.equal(state['runs.query'], 'pay');
 });

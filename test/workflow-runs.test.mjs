@@ -9,7 +9,8 @@ import {
   correlateWorkflow,
   fetchWorkflowManifests,
   loadWorkflowRunPage,
-  pageWorkflowIdentities
+  pageWorkflowIdentities,
+  workflowTreeIdentities
 } from '../src/workflow-runs.ts';
 
 const application = {metadata: {name: 'payments', namespace: 'argocd'}, spec: {project: 'platform', destination: {namespace: 'payments'}}};
@@ -17,6 +18,38 @@ const application = {metadata: {name: 'payments', namespace: 'argocd'}, spec: {p
 function identity(index, timestamp = `2026-08-20T00:${String(index).padStart(2, '0')}:00Z`) {
   return {group: 'argoproj.io', version: 'v1alpha1', kind: 'Workflow', name: `run-${index}`, namespace: 'payments', creationTimestamp: timestamp};
 }
+
+test('discovers Workflow identities present only in orphaned Application tree nodes', () => {
+  const identities = workflowTreeIdentities({
+    nodes: [],
+    orphanedNodes: [identity(1)]
+  });
+
+  assert.deepEqual(identities.map(item => item.name), ['run-1']);
+});
+
+test('deduplicates a Workflow identity present in managed and orphaned tree nodes', () => {
+  const duplicate = {...identity(2), uid: 'workflow-uid-2'};
+  const identities = workflowTreeIdentities({
+    nodes: [duplicate],
+    orphanedNodes: [{...duplicate}, {...identity(5), uid: 'workflow-uid-5'}]
+  });
+
+  assert.deepEqual(identities.map(item => [item.namespace, item.name, item.uid]), [
+    ['payments', 'run-5', 'workflow-uid-5'],
+    ['payments', 'run-2', 'workflow-uid-2']
+  ]);
+});
+
+test('keeps managed tree node and bare-array Workflow discovery unchanged', () => {
+  const managedNodes = [
+    identity(3),
+    {group: '', version: 'v1', kind: 'Service', name: 'payments', namespace: 'payments'}
+  ];
+
+  assert.deepEqual(workflowTreeIdentities({nodes: managedNodes}).map(item => item.name), ['run-3']);
+  assert.deepEqual(workflowTreeIdentities(managedNodes).map(item => item.name), ['run-3']);
+});
 
 test('pages Workflow tree identities newest first with stable next and previous cursors', () => {
   const tree = {nodes: Array.from({length: 51}, (_, index) => identity(index))};
@@ -118,6 +151,31 @@ test('live pages omit unresolved runs by default and expose archive unavailabili
   const archive = await loadWorkflowRunPage({application, source: 'Archive'});
   assert.equal(archive.state, 'unavailable');
   assert.deepEqual(archive.capability.archive, archiveUnavailable());
+});
+
+test('loads an inferred Workflow discovered from orphaned Application tree nodes', async () => {
+  const page = await loadWorkflowRunPage({
+    application,
+    tree: {
+      nodes: [],
+      orphanedNodes: [{
+        ...identity(4),
+        namespace: undefined,
+        labels: {'workflows.argoproj.io/workflow-template': 'nightly'}
+      }]
+    },
+    fetcher: async () => new Response(JSON.stringify({
+      apiVersion: 'argoproj.io/v1alpha1',
+      kind: 'Workflow',
+      metadata: {name: 'run-4', namespace: 'payments'},
+      status: {phase: 'Succeeded'}
+    }), {status: 200})
+  });
+
+  assert.equal(page.state, 'ready');
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.rows[0].identity.name, 'run-4');
+  assert.equal(page.rows[0].correlation.confidence, 'inferred');
 });
 
 test('classifies an all-page 401/403 as permission denied instead of empty or generic error', async () => {

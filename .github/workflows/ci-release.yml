@@ -26,9 +26,145 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+  compatibility:
+    name: Compatibility (${{ matrix.argocd }})
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest extension-capable 2.x release plus the latest 3.4 patch.
+        argocd: ['v2.13.4', 'v3.4.7']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: argoflow
+
+      - name: Install Argo CD ${{ matrix.argocd }}
+        run: |
+          # Server-side apply: several bundled CRDs exceed the 256 KiB
+          # client-side last-applied-configuration annotation limit.
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply --server-side -n argocd -f "https://raw.githubusercontent.com/argoproj/argo-cd/${{ matrix.argocd }}/manifests/install.yaml"
+          kubectl -n argocd rollout status deploy/argocd-server --timeout=420s
+
+      - name: Mount the ArgoFlow extension into argocd-server
+        run: |
+          kubectl -n argocd create configmap argoflow-extension --from-file=extension-argoflow.js=dist/extension-workflows.js
+          kubectl -n argocd patch deploy argocd-server --type=strategic --patch-file test/e2e/argocd-server-extension-patch.yaml
+          kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
+          kubectl -n argocd exec deploy/argocd-server -- ls /tmp/extensions
+
+      - name: Install Argo Workflows v3.7.4 and Argo Events v1.9.11
+        run: |
+          kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace argo-events --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply --server-side -n argo -f "https://raw.githubusercontent.com/argoproj/argo-workflows/v3.7.4/manifests/quick-start-minimal.yaml"
+          kubectl apply --server-side -n argo-events -f "https://raw.githubusercontent.com/argoproj/argo-events/v1.9.11/manifests/install.yaml"
+          kubectl wait --for=condition=Established \
+            crd/workflows.argoproj.io \
+            crd/workflowtemplates.argoproj.io \
+            crd/cronworkflows.argoproj.io \
+            crd/eventbus.argoproj.io \
+            crd/eventsources.argoproj.io \
+            crd/sensors.argoproj.io \
+            --timeout=180s
+          kubectl -n argo rollout status deploy/workflow-controller --timeout=300s || true
+
+      - name: Sync the fixture Application at this commit
+        env:
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Fork PRs must sync the fork's clone: the head SHA only exists there.
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || github.event.repository.clone_url }}
+        run: |
+          kubectl create namespace argoflow-e2e --dry-run=client -o yaml | kubectl apply -f -
+          sed -e "s/__REVISION__/${REVISION}/" -e "s|__REPO_URL__|${REPO_URL}|" test/e2e/argocd-application.yaml | kubectl apply -f -
+
+      # Convergence means: every fixture is Synced and the sample run reached Succeeded.
+      # Aggregate application health stays Degraded by design here (suspended CronWorkflow),
+      # so it is deliberately not part of the gate.
+      - name: Wait for fixture sync to converge
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 66); do
+            sync="$(kubectl -n argocd get application argoflow-e2e -o jsonpath='{.status.sync.status}' 2>/dev/null || echo '')"
+            phase="$(kubectl -n argoflow-e2e get workflow argoflow-hello-e2e -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
+            echo "attempt ${attempt}: sync=${sync} workflow=${phase}"
+            if [ "${sync}" = "Synced" ] && [ "${phase}" = "Succeeded" ]; then
+              kubectl -n argoflow-e2e get workflows,workflowtemplates,cronworkflows,eventsources,sensors,eventbus,serviceaccounts
+              exit 0
+            fi
+            if [ "${phase}" = "Failed" ] || [ "${phase}" = "Error" ]; then
+              echo "Workflow reached terminal phase ${phase}; failing fast with details:"
+              kubectl -n argoflow-e2e get workflow argoflow-hello-e2e -o jsonpath='{.status.message}{"\n"}{range .status.nodes[*]}{.name}{" -> "}{.phase}{" | "}{.message}{"\n"}{end}' || true
+              kubectl -n argoflow-e2e get pods -o wide || true
+              kubectl -n argoflow-e2e describe pod -l workflows.argoproj.io/workflow=argoflow-hello-e2e || true
+              exit 1
+            fi
+            sleep 10
+          done
+          kubectl -n argocd describe application argoflow-e2e || true
+          kubectl -n argoflow-e2e get all || true
+          exit 1
+
+      - name: Run UI smoke test
+        timeout-minutes: 10
+        env:
+          # Every assertion blocks, including the Grid toggle click: the
+          # original instability was the container-vs-icon click bug, fixed at
+          # the root in the smoke driver.
+          ARGOFLOW_SMOKE_STRICT: '1'
+        # Registration/rendering/telemetry failures must turn this job red
+        # (issue #11).
+        run: |
+          set -euo pipefail
+          ARGOCD_PASSWORD="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
+          export ARGOCD_PASSWORD
+          kubectl -n argocd port-forward svc/argocd-server 8090:443 >artifacts-portforward.log 2>&1 &
+          echo $! > portforward.pid
+          trap 'kill "$(cat portforward.pid)" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null; then break; fi
+            sleep 2
+          done
+          echo '--- /api/v1/extensions ---'
+          curl -sk "https://127.0.0.1:8090/api/v1/extensions" | head -c 2000 || true
+          echo
+          echo '--- bundle HTTP status ---'
+          curl -sk -o /dev/null -w '%{http_code}\n' "https://127.0.0.1:8090/extensions/extension-argoflow.js" || true
+          echo '--- loader head ---'
+          curl -sk "https://127.0.0.1:8090/extensions.js" | head -c 1200 || true
+          echo
+          echo '--- argocd-server extension dir ---'
+          kubectl -n argocd exec deploy/argocd-server -- sh -c 'ls -la /tmp/extensions; cat /shared/app/ui/extensions.sh 2>/dev/null | head -c 500' || true
+          curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null
+          node scripts/e2e-smoke.mjs
+
+      - name: Collect smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-evidence-${{ matrix.argocd }}
+          path: |
+            artifacts/
+            artifacts-portforward.log
+
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: check
+    # A release must not publish while a supported Argo CD version is still
+    # unvalidated (issue #11): compatibility failures block the release.
+    needs: [check, compatibility]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,7 +177,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Build with the version semantic-release is about to publish, not the
+      # stale checked-in package.json value (see scripts/compute-next-version.mjs).
+      - name: Compute the upcoming release version
+        id: version
+        run: echo "version=$(node scripts/compute-next-version.mjs | tail -1)" >> "$GITHUB_OUTPUT"
       - run: npm run build
+        env:
+          ARGOFLOW_VERSION: ${{ steps.version.outputs.version }}
       - run: npm run package:release
       - run: npm run release
         env:

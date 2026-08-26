@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 
-import {telemetryDetail} from '../src/telemetry.ts';
+import {EXTENSION_VERSION, telemetryDetail} from '../src/telemetry.ts';
 
 const [telemetry, workspace, runs] = await Promise.all([
   readFile(new URL('../src/telemetry.ts', import.meta.url), 'utf8'),
@@ -18,7 +18,7 @@ test('telemetry detail is anonymous and limited to operational fields', () => {
   assert.deepEqual(Object.keys(detail).sort(), [
     'durationMs', 'event', 'feature', 'nodeCount', 'pageSize', 'rowCount', 'source', 'state', 'version', 'view'
   ]);
-  assert.equal(detail.version, '0.4.0');
+  assert.equal(detail.version, EXTENSION_VERSION);
   assert.doesNotMatch(JSON.stringify(detail), /run-|payments|secret|message|parameter|url/i);
 });
 
@@ -26,7 +26,7 @@ test('telemetry contract does not accept or interpolate resource data', () => {
   const hostile = telemetryDetail('run-page.loaded', {
     resourceName: 'payments-secret', message: 'bearer token', url: 'https://cluster.example'
   });
-  assert.deepEqual(hostile, {event: 'run-page.loaded', version: '0.4.0'});
+  assert.deepEqual(hostile, {event: 'run-page.loaded', version: EXTENSION_VERSION});
   assert.match(telemetry, /anonymous operational facts/);
   assert.doesNotMatch(telemetry, /resource(Name|Namespace|Message|Url)/);
   assert.match(workspace, /nodeCount: nodes\.length/);
@@ -39,7 +39,7 @@ test('event telemetry remains anonymous while recording bounded operational outc
     resourceName: 'events-secret', url: 'https://cluster.example', message: 'Bearer secret', payload: '{"token":"x"}', headers: {authorization: 'Bearer x'}, params: {namespace: 'events'}
   });
   assert.deepEqual(detail, {
-    event: 'event-chain.loaded', version: '0.4.0', feature: 'event-chain', state: 'partial', durationMs: 4, readCount: 25, errorCount: 2, nodeCount: 9
+    event: 'event-chain.loaded', version: EXTENSION_VERSION, feature: 'event-chain', state: 'partial', durationMs: 4, readCount: 25, errorCount: 2, nodeCount: 9
   });
   assert.match(telemetry, /event-resource\.loaded/);
   assert.match(telemetry, /event-chain\.query/);

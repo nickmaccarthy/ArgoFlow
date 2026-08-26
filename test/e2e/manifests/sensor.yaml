@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: argoflow-tick-sensor
+  namespace: argoflow-e2e
+spec:
+  dependencies:
+    - name: tick
+      eventSourceName: argoflow-calendar
+      eventName: tick
+  triggers:
+    - template:
+        conditions: [tick]
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                generateName: argoflow-tick-
+                namespace: argoflow-e2e
+          manifests: []
