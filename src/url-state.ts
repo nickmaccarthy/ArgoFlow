@@ -58,13 +58,16 @@ export function serializeHashState(hash: string, state: HashState): string {
  */
 export function useHashState(): [HashState, (patch: Record<string, string | undefined>) => void] {
   const [state, setState] = React.useState<HashState>(() => parseHashState(typeof window === 'undefined' ? '' : window.location.hash));
-  const writtenRef = React.useRef('');
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const onHashChange = () => {
-      // Ignore hashes this hook just wrote; only external navigation re-reads state.
-      if (window.location.hash !== writtenRef.current) setState(parseHashState(window.location.hash));
+      // Every hashchange is a navigation the hook did not perform (its own
+      // replaceState never fires the event), so the state is re-read even when
+      // the URL matches a hash written earlier: back/forward can return here.
+      // Canonical-JSON equality skips no-op events without going stale.
+      const next = parseHashState(window.location.hash);
+      setState(previous => (JSON.stringify(next) === JSON.stringify(previous) ? previous : next));
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -74,7 +77,6 @@ export function useHashState(): [HashState, (patch: Record<string, string | unde
     setState(previous => mergeHashState(previous, update));
     if (typeof window === 'undefined') return;
     const nextHash = serializeHashState(window.location.hash, mergeHashState(parseHashState(window.location.hash), update));
-    writtenRef.current = nextHash;
     const nextUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ''}`;
     if (nextUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       window.history.replaceState(null, '', nextUrl);

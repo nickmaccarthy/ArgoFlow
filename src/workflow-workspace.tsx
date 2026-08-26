@@ -40,10 +40,12 @@ export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManife
     patchHash({'run.view': next === defaultView ? undefined : next});
   };
 
-  // A workflow that grew past the DAG budget forces list view; keep the hash truthful.
+  // A workflow that grew past the DAG budget forces list view; keep the hash
+  // truthful. The state initializer already coerces a deep-linked 'dag', so
+  // the stale key must be detected through the hash itself, not just the state.
   React.useEffect(() => {
-    if (largeWorkflow && view === 'dag') changeView('list');
-  }, [largeWorkflow, view]);
+    if (largeWorkflow && (view === 'dag' || hashState['run.view'] === 'dag')) changeView('list');
+  }, [largeWorkflow, view, hashState]);
 
   const selectNode = (id?: string) => {
     setSelectedId(id);

@@ -416,10 +416,13 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
   const autoRefresh = shouldAutoRefreshRunPage(page?.rows ?? [], hidden, error, page?.state);
 
   React.useEffect(() => {
-    if (!autoRefresh) return undefined;
+    // While a request is in flight the interval stands down: a tick would bump
+    // refreshToken, whose effect cleanup aborts the pending load, so responses
+    // slower than one period would churn forever without ever settling.
+    if (!autoRefresh || loading) return undefined;
     const timer = window.setInterval(() => setRefreshToken(value => value + 1), RUN_AUTO_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [autoRefresh]);
+  }, [autoRefresh, loading]);
 
   // A hidden->visible transition fires before effects re-install their
   // listeners, so the promised immediate refresh keys off the hidden state

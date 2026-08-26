@@ -102,13 +102,24 @@ test('auto-refresh ticks only for visible tabs holding active runs on healthy pa
   assert.ok(RUN_AUTO_REFRESH_INTERVAL_MS >= 5000);
 });
 
-test('returning to a visible tab refreshes immediately via a hidden-state transition', async () => {
+test('auto-refresh stands down while a request is loading and reconciles hash navigation', async () => {
   const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/application-workflows-view.ts', import.meta.url), 'utf8'));
-  // The immediate-refresh bump keys off the hidden state change itself; the
-  // visibilitychange listener inside the interval effect was removed because
-  // it is uninstalled while hidden and misses its own wake-up event.
+  // A tick during an in-flight request bumps refreshToken, whose cleanup
+  // aborts that request: responses slower than one period would never settle.
+  assert.match(source, /if \(!autoRefresh \|\| loading\) return undefined;/);
+  assert.match(source, /\}, \[autoRefresh, loading\]\);/);
+  // The immediate-refresh bump keys off the hidden state change itself.
   assert.match(source, /if \(wasHidden && !hidden && autoRefresh\) setRefreshToken\(value => value \+ 1\)/);
   assert.doesNotMatch(source, /const onVisible = \(\) =>/);
+});
+
+test('hash state re-reads every navigation instead of trusting written hashes', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../src/url-state.ts', import.meta.url), 'utf8'));
+  // Back/forward can return to a hash the hook wrote earlier; the handler must
+  // not skip it, and its own replaceState never fires hashchange so no guard
+  // is needed against self-writes.
+  assert.match(source, /const next = parseHashState\(window\.location\.hash\);/);
+  assert.doesNotMatch(source, /writtenRef/);
 });
 
 test('run filters and cursors round-trip through namespaced hash state', async () => {
