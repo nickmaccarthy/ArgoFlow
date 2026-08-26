@@ -72,7 +72,7 @@ function assertTelemetryContract(events, {expect = []} = {}) {
   if (expect.includes('workflow.ready')) assert(events.some(event => event.event === 'workflow.ready'), 'expected workflow.ready telemetry');
   assert(!events.some(event => event.event === 'render.failed'), 'render.failed telemetry must stay absent');
   for (const event of events) {
-    assert(!/payments|secret|bearer|token|namespace/i.test(JSON.stringify(event)), `telemetry leaked resource data: ${JSON.stringify(event)}`);
+    assert(!/payments|secret|bearer|token|namespace/i.test(JSON.stringify(event)), 'telemetry leaked resource data; inspect the event stream in the page, not here');
   }
 }
 
@@ -91,18 +91,29 @@ async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
       const divs = document.querySelectorAll('.application-details__view-type').length;
       const icons = document.querySelectorAll(`.${needleIcon}`).length;
       const nodes = [...document.querySelectorAll(`.application-details__view-type i.${needleIcon}`)];
-      return {found: nodes.length > 0, index: 0, divs, icons, candidates: nodes.length};
+      return {found: nodes.length > 0, divs, icons, candidates: nodes.length};
     }, icon);
     if (last.found) {
       // React's synthetic event system responds to real input; use the mouse
-      // on the icon's own box.
+      // on the icon's own box. A re-render between scan and click can detach
+      // the handle: log, wait, and rescan instead of failing the run.
       const handles = await page.$$('.application-details__view-type i.' + icon);
       const handle = handles[0];
-      const box = await handle.boundingBox();
-      if (box) {
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-      } else {
-        await handle.click();
+      if (!handle) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      try {
+        const box = await handle.boundingBox();
+        if (box) {
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        } else {
+          await handle.click();
+        }
+      } catch (clickError) {
+        log(`click on ${icon} failed, rescanning: ${clickError.message}`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
       }
       log(`clicked extension tab icon ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
       // Evidence dump: Argo CD's toggle handler navigates to ?view=<title>;
@@ -269,17 +280,26 @@ try {
     await page.waitForSelector('.wf-dag-shell svg', {timeout: 60000});
   } catch (error) {
     // Decisive evidence: distinguishes panel-not-open vs wrong tab vs
-    // extension stuck in a notice state.
-    log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
-      href: location.href,
-      panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
-      panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
-      tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
-      wfExtensionMounted: !!document.querySelector('#workflow-extension'),
-      wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
-      dagShell: !!document.querySelector('.wf-dag-shell')
-    }))));
-    await shot(page, '03-deeplink-failure');
+    // extension stuck in a notice state. Diagnostics are best-effort — a
+    // failed dump or screenshot must never replace the original failure.
+    try {
+      log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
+        href: location.href,
+        panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
+        panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
+        tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
+        wfExtensionMounted: !!document.querySelector('#workflow-extension'),
+        wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
+        dagShell: !!document.querySelector('.wf-dag-shell')
+      }))));
+    } catch (dumpError) {
+      log(`deep-link failure dump itself failed: ${dumpError.message}`);
+    }
+    try {
+      await shot(page, '03-deeplink-failure');
+    } catch (shotError) {
+      log(`deep-link failure screenshot failed: ${shotError.message}`);
+    }
     throw error;
   }
   await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
