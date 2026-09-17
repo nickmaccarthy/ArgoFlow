@@ -8,7 +8,8 @@
     "build": "webpack --mode production",
     "check:licenses": "node scripts/check-licenses.mjs",
     "check:large-fixture": "node scripts/generate-large-workflow-status.mjs --check",
-    "check": "tsc --noEmit && npm run build && npm run check:licenses && npm run check:large-fixture && node --experimental-strip-types --test test/*.test.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "check": "tsc --noEmit && npm run build && npm run check:version && npm run check:licenses && npm run check:large-fixture && node --experimental-strip-types --test test/*.test.mjs",
     "install:local": "bash scripts/install-local.sh",
     "package:release": "bash scripts/package-release.sh",
     "release": "semantic-release",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@types/react": "17.0.91",
+    "puppeteer-core": "23.11.1",
     "react": "17.0.2",
     "semantic-release": "25.0.9",
     "ts-loader": "9.5.2",

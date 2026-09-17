@@ -137,7 +137,7 @@ flowchart TB
 ### Requirements
 
 - Argo CD `>=2.13.4, <3.5`
-- Argo Workflows resources in the Argo CD Application tree
+- Argo Workflows resources exposed in the Argo CD Application tree, including orphaned resources when AppProject orphaned-resource monitoring is enabled and `orphanedResources.ignore` does not exclude them
 - Argo Events resources for Event views and event-chain correlation
 - Node.js and npm when building from source
 

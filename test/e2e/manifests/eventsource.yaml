@@ -1,0 +1,11 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: argoflow-calendar
+  namespace: argoflow-e2e
+spec:
+  calendar:
+    # February 31st never occurs: deterministic "configured but never fires".
+    tick:
+      schedule: "0 0 31 2 *"
+      timezone: UTC

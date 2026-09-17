@@ -47,6 +47,7 @@ export interface ApplicationTreeNode {
 
 export interface ApplicationTree {
   nodes?: ApplicationTreeNode[];
+  orphanedNodes?: ApplicationTreeNode[];
   error?: {status?: number; message?: string} | string;
 }
 

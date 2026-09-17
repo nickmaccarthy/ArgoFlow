@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 const accepted = new Set([
   '(BSD-2-Clause OR MIT OR Apache-2.0)',
   '(MIT OR CC0-1.0)',
+  '0BSD',
   'Apache-2.0',
   'Artistic-2.0',
   'BlueOak-1.0.0',

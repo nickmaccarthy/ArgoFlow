@@ -1,0 +1,14 @@
+# Mounts the built extension bundle into the argocd-server extensions directory.
+# Strategic merge keys (container name, volume name, mountPath) make this idempotent.
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-server
+          volumeMounts:
+            - name: argoflow-extensions
+              mountPath: /tmp/extensions
+      volumes:
+        - name: argoflow-extensions
+          configMap:
+            name: argoflow-extension

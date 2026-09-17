@@ -1,0 +1,13 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: argoflow-demo-template
+  namespace: argoflow-e2e
+spec:
+  entrypoint: main
+  templates:
+    - name: main
+      container:
+        image: busybox:1.36
+        command: [sh, -c]
+        args: ["template body"]

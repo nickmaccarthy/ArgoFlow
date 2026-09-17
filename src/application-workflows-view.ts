@@ -11,6 +11,7 @@ import {
 } from './workflow-runs.ts';
 import {WORKFLOW_PHASES, workflowPhaseColor, type WorkflowPhase} from './workflow-resource.ts';
 import {emitExtensionTelemetry, telemetryNow} from './telemetry.ts';
+import {useHashState} from './url-state.ts';
 
 export interface RunFilters {
   phase: '' | WorkflowPhase;
@@ -24,6 +25,20 @@ export interface RunFilters {
 export const DEFAULT_RUN_FILTERS: RunFilters = {
   phase: '', query: '', namespace: '', lifecycle: 'all', from: '', to: ''
 };
+
+export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
+
+/**
+ * True when polling should tick: tab visible, no error on the current page,
+ * a healthy page state, and at least one active run on the bounded page.
+ * Errored, permission-limited, and unavailable pages generate zero traffic
+ * (issue #4); a retained prior page must not keep polling after a failure.
+ */
+export function shouldAutoRefreshRunPage(rows: readonly WorkflowRunRow[], hidden?: boolean, error?: string, state?: RunPage['state']): boolean {
+  if (hidden === true || error) return false;
+  if (state === 'permission' || state === 'error' || state === 'unavailable') return false;
+  return rows.some(isActiveWorkflowRun);
+}
 
 export function workflowApplicationKey(application?: ApplicationViewExtensionProps['application']): string {
   return application?.metadata?.uid || `${application?.metadata?.namespace || ''}/${application?.metadata?.name || ''}`;
@@ -261,7 +276,8 @@ function templateName(reference?: string): string {
   return reference?.split('/').pop() || '—';
 }
 
-function PageNotice({page, loading, error}: {page?: RunPage; loading: boolean; error?: string}) {
+function PageNotice({page, loading, refreshing, error}: {page?: RunPage; loading: boolean; refreshing?: boolean; error?: string}) {
+  if (loading && refreshing) return React.createElement('p', {className: 'wf-result-note', role: 'status', 'aria-live': 'polite'}, 'Refreshing this page of Workflow runs in place…');
   if (loading) return React.createElement('p', {role: 'status', 'aria-live': 'polite'}, 'Loading one bounded page of Workflow runs…');
   if (error) return React.createElement('p', {role: 'alert'}, `Workflow runs could not be loaded: ${error}`);
   if (!page) return null;
@@ -286,13 +302,13 @@ function PageNotice({page, loading, error}: {page?: RunPage; loading: boolean; e
 
 function RunFiltersForm({filters, setFilters, source, changeSource}: {
   filters: RunFilters;
-  setFilters: React.Dispatch<React.SetStateAction<RunFilters>>;
+  setFilters(filters: RunFilters): void;
   source: RunSource;
   changeSource(event: React.ChangeEvent<HTMLSelectElement>): void;
 }) {
   const update = (key: keyof RunFilters) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const value = event.currentTarget.value;
-    setFilters(current => ({...current, [key]: value}));
+    setFilters({...filters, [key]: value});
   };
   return React.createElement(
     React.Fragment,
@@ -360,17 +376,68 @@ function RunStats({rows}: {rows: WorkflowRunRow[]}) {
 }
 
 export function ApplicationWorkflowsView({application, tree, archive, baseUrl, fetcher}: ApplicationWorkflowsViewProps) {
-  const [source, setSource] = React.useState<RunSource>('Live');
+  const [hashState, patchHash] = useHashState();
   const applicationKey = workflowApplicationKey(application);
-  const [cursorState, setCursorState] = React.useState<{applicationKey: string; cursor?: string}>(() => ({applicationKey}));
+  const [source, setSource] = React.useState<RunSource>(() => hashState['runs.source'] === 'Archive' ? 'Archive' : 'Live');
+  const [cursorState, setCursorState] = React.useState<{applicationKey: string; cursor?: string}>(() => ({
+    applicationKey,
+    cursor: hashState['runs.cursor']
+  }));
   const cursor = cursorForApplication(cursorState, applicationKey);
   const setCursor = (next?: string) => setCursorState({applicationKey, cursor: next});
   const [page, setPage] = React.useState<RunPage>();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string>();
   const [refreshToken, setRefreshToken] = React.useState(0);
-  const [filters, setFilters] = React.useState<RunFilters>(DEFAULT_RUN_FILTERS);
+  const [hidden, setHidden] = React.useState(false);
+  const [filters, setFilters] = React.useState<RunFilters>(() => {
+    const phase = (WORKFLOW_PHASES as readonly string[]).includes(hashState['runs.phase'] ?? '') ? hashState['runs.phase'] as WorkflowPhase : '';
+    const lifecycle = ['active', 'completed'].includes(hashState['runs.lifecycle'] ?? '') ? hashState['runs.lifecycle'] as RunFilters['lifecycle'] : 'all';
+    return {
+      phase,
+      query: hashState['runs.query'] ?? '',
+      namespace: hashState['runs.namespace'] ?? '',
+      lifecycle,
+      from: hashState['runs.from'] ?? '',
+      to: hashState['runs.to'] ?? ''
+    };
+  });
   const applicationName = application?.metadata?.name || 'Selected Application';
+
+  // Polling pauses while the tab is hidden; returning to the tab triggers an immediate refresh.
+  React.useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const syncVisibility = () => setHidden(document.hidden);
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => document.removeEventListener('visibilitychange', syncVisibility);
+  }, []);
+
+  const autoRefresh = shouldAutoRefreshRunPage(page?.rows ?? [], hidden, error, page?.state);
+
+  React.useEffect(() => {
+    // While a request is in flight the interval stands down: a tick would bump
+    // refreshToken, whose effect cleanup aborts the pending load, so responses
+    // slower than one period would churn forever without ever settling.
+    if (!autoRefresh || loading) return undefined;
+    const timer = window.setInterval(() => setRefreshToken(value => value + 1), RUN_AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, loading]);
+
+  // A hidden->visible transition fires before effects re-install their
+  // listeners, so the promised immediate refresh keys off the hidden state
+  // change itself rather than a visibilitychange listener owned by the
+  // interval effect (whose first tick would otherwise land one period later).
+  const wasHiddenRef = React.useRef(hidden);
+  React.useEffect(() => {
+    const wasHidden = wasHiddenRef.current;
+    wasHiddenRef.current = hidden;
+    if (wasHidden && !hidden && autoRefresh) setRefreshToken(value => value + 1);
+  }, [hidden, autoRefresh]);
+
+  // Distinguishes a pure refresh tick from changed inputs: only input changes clear the page.
+  const requestKey = `${applicationKey}|${source}|${cursor ?? ''}`;
+  const lastRequestRef = React.useRef<string>();
 
   React.useEffect(() => {
     if (!application?.metadata?.name) {
@@ -382,9 +449,11 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     let cancelled = false;
     const controller = new AbortController();
     const started = telemetryNow();
+    const refreshTick = lastRequestRef.current === requestKey;
+    lastRequestRef.current = requestKey;
     setLoading(true);
     setError(undefined);
-    setPage(undefined);
+    if (!refreshTick) setPage(undefined);
     void loadWorkflowRunPage({application, tree, archive, baseUrl, cursor, fetcher, signal: controller.signal, source})
       .then(result => {
         if (cancelled) return;
@@ -413,12 +482,29 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
       cancelled = true;
       controller.abort();
     };
-  }, [application, applicationKey, archive, baseUrl, cursor, fetcher, refreshToken, source, tree]);
+  }, [application, applicationKey, archive, baseUrl, cursor, fetcher, refreshToken, requestKey, source, tree]);
 
   const rows = React.useMemo(() => filterWorkflowRunRows(page?.rows || [], filters), [filters, page]);
+  const updateFilters = (next: RunFilters) => {
+    setFilters(next);
+    patchHash({
+      'runs.phase': next.phase || undefined,
+      'runs.query': next.query || undefined,
+      'runs.namespace': next.namespace || undefined,
+      'runs.lifecycle': next.lifecycle === 'all' ? undefined : next.lifecycle,
+      'runs.from': next.from || undefined,
+      'runs.to': next.to || undefined
+    });
+  };
   const changeSource = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setSource(event.target.value as RunSource);
+    const next = event.currentTarget.value as RunSource;
+    setSource(next);
     setCursor(undefined);
+    patchHash({'runs.source': next === 'Archive' ? next : undefined, 'runs.cursor': undefined});
+  };
+  const changeCursor = (next?: string) => {
+    setCursor(next);
+    patchHash({'runs.cursor': next});
   };
   const unavailableApplication = !application?.metadata?.name;
 
@@ -434,16 +520,18 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
       ? React.createElement('p', {role: 'alert'}, 'Workflow runs are unavailable until the host supplies an Application.')
       : React.createElement(React.Fragment, null,
         React.createElement(RunStats, {rows: page?.rows || []}),
-        React.createElement(RunFiltersForm, {filters, setFilters, source, changeSource}),
-        React.createElement('p', {className: 'wf-result-note', role: 'status'}, `${rows.length} shown from this ${page?.pageSize || 25}-run ${source.toLocaleLowerCase()} page. Filters apply to this page.`),
-        React.createElement(PageNotice, {page, loading, error}),
-        page && !loading && !error && ['ready', 'partial', 'stale'].includes(page.state)
+        React.createElement(RunFiltersForm, {filters, setFilters: updateFilters, source, changeSource}),
+        React.createElement('p', {className: 'wf-result-note', role: 'status'}, `${rows.length} shown from this ${page?.pageSize || 25}-run ${source.toLocaleLowerCase()} page. Filters apply to this page.${autoRefresh ? ` Auto-refreshes every ${Math.round(RUN_AUTO_REFRESH_INTERVAL_MS / 1000)} seconds while runs are active.` : ''}`),
+        React.createElement(PageNotice, {page, loading: loading && !page, refreshing: Boolean(page && loading), error}),
+        page && !error && ['ready', 'partial', 'stale'].includes(page.state)
           ? React.createElement(React.Fragment, null,
-            rows.length ? React.createElement(RunsTable, {rows}) : React.createElement('p', {role: 'status'}, 'No Workflow runs on this page match the current filters.'),
+            rows.length
+              ? React.createElement(RunsTable, {rows})
+              : loading ? null : React.createElement('p', {role: 'status'}, 'No Workflow runs on this page match the current filters.'),
             React.createElement('div', {className: 'wf-pagination', 'aria-label': 'Workflow run pagination', role: 'group'},
-              React.createElement('button', {type: 'button', disabled: !page.previousCursor, onClick: () => setCursor(page.previousCursor), 'aria-label': 'Previous Workflow run page'}, 'Previous'),
+              React.createElement('button', {type: 'button', disabled: loading || !page.previousCursor, onClick: () => changeCursor(page.previousCursor), 'aria-label': 'Previous Workflow run page'}, 'Previous'),
               ' ',
-              React.createElement('button', {type: 'button', disabled: !page.nextCursor, onClick: () => setCursor(page.nextCursor), 'aria-label': 'Next Workflow run page'}, 'Next')
+              React.createElement('button', {type: 'button', disabled: loading || !page.nextCursor, onClick: () => changeCursor(page.nextCursor), 'aria-label': 'Next Workflow run page'}, 'Next')
             )
           )
           : null
