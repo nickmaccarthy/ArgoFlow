@@ -419,6 +419,7 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     applicationKey,
     cursor: decodeRunViewHash(hashState).cursor
   }));
+  const applicationChanged = cursorState.applicationKey !== applicationKey;
   const cursor = cursorForApplication(cursorState, applicationKey);
   const setCursor = (next?: string) => setCursorState({applicationKey, cursor: next});
   const [page, setPage] = React.useState<RunPage>();
@@ -428,6 +429,16 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
   const [hidden, setHidden] = React.useState(false);
   const [filters, setFilters] = React.useState<RunFilters>(() => decodeRunViewHash(hashState).filters);
   const applicationName = application?.metadata?.name || 'Selected Application';
+
+  // A page cursor belongs to the Application that produced it. The host can
+  // reuse this mounted view for another Application, so clear both local and
+  // deep-linked cursor state before a later hashchange can associate the old
+  // cursor with the new Application.
+  React.useEffect(() => {
+    if (!applicationChanged) return;
+    setCursorState({applicationKey});
+    patchHash({[RUN_CURSOR_HASH_KEY]: undefined});
+  }, [applicationChanged, applicationKey, patchHash]);
 
   // Polling pauses while the tab is hidden; returning to the tab triggers an immediate refresh.
   React.useEffect(() => {
@@ -519,9 +530,9 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     if (externalRevision === 0) return;
     const next = decodeRunViewHash(hashState);
     setSource(next.source);
-    setCursorState({applicationKey, cursor: next.cursor});
+    setCursorState({applicationKey, cursor: applicationChanged ? undefined : next.cursor});
     setFilters(next.filters);
-  }, [externalRevision]);
+  }, [externalRevision, applicationChanged]);
 
   const rows = React.useMemo(() => filterWorkflowRunRows(page?.rows || [], filters), [filters, page]);
   const updateFilters = (next: RunFilters) => {

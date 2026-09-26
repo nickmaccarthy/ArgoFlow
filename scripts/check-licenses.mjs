@@ -14,6 +14,7 @@ const accepted = new Set([
   'CC0-1.0',
   'ISC',
   'MIT',
+  'MIT-0',
   'Python-2.0',
 ]);
 const acceptedMissing = new Set(['node_modules/npm/node_modules/qrcode-terminal']); // Apache-2.0; omitted from its lock metadata.
