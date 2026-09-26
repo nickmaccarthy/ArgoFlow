@@ -5,11 +5,12 @@ import {
   DEFAULT_RUN_FILTERS,
   RUN_AUTO_REFRESH_INTERVAL_MS,
   cursorForApplication,
+  decideSwitchedRunCursor,
   decodeRunViewHash,
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
-  reconcileRunCursor,
+  resolveRunCursor,
   RUN_CURSOR_HASH_KEY,
   RUN_FROM_HASH_KEY,
   RUN_LIFECYCLE_HASH_KEY,
@@ -226,33 +227,79 @@ test('decodeRunViewHash back/forward semantics', () => {
   assert.deepEqual(resultB.filters, DEFAULT_RUN_FILTERS);
 });
 
-test('reconcileRunCursor rejects the outgoing Application cursor retained in the hash', () => {
-  // The hash still carries the Application we are leaving; its page token is
-  // meaningless to the incoming Application, so it is never adopted and the
-  // live URL must be told to drop it.
-  assert.deepEqual(reconcileRunCursor('A-page2', 'A-page2'), {cursor: undefined, clearsHash: true});
+test('resolveRunCursor adopts a token whose recorded owner is this Application', () => {
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'B-page2', owner: 'app-b'}, false, undefined, undefined),
+    {cursor: 'B-page2', recordOwner: false, clearsStale: false}
+  );
 });
 
-test('reconcileRunCursor honours a coordinated host navigation cursor', () => {
-  // The host wrote the incoming Application's cursor before dispatching
-  // hashchange; it belongs to the Application now being rendered.
-  assert.deepEqual(reconcileRunCursor('A-page2', 'B-page2'), {cursor: 'B-page2', clearsHash: false});
+test('resolveRunCursor keeps the current page when the hash token belongs to another Application', () => {
+  // The foreign token is not adopted, and because refusing it must not reset
+  // the page this Application already holds, the current cursor is kept.
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'A-page2', owner: 'app-a'}, false, undefined, 'A-page2'),
+    {cursor: 'A-page2', recordOwner: false, clearsStale: false}
+  );
 });
 
-test('reconcileRunCursor adopts an ordinary cursor deep link with no stale memory', () => {
-  // First Application render: nothing to compare against, so the cursor is
-  // honoured and nothing is cleared.
-  assert.deepEqual(reconcileRunCursor(undefined, 'A-page2'), {cursor: 'A-page2', clearsHash: false});
+test('resolveRunCursor adopts and labels an owner-less token arriving with the Application change', () => {
+  // The incoming Application's deep link has no owner yet, so it is adopted and
+  // labelled with this Application's key.
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'B-page2', owner: undefined}, true, 'A-page2', undefined),
+    {cursor: 'B-page2', recordOwner: true, clearsStale: false}
+  );
 });
 
-test('reconcileRunCursor leaves an absent hash cursor unadopted and uncleared', () => {
-  // Stale memory exists but the hash carries no cursor: nothing to adopt and
-  // nothing to clear.
-  assert.deepEqual(reconcileRunCursor('A-page2', undefined), {cursor: undefined, clearsHash: false});
+test('resolveRunCursor refuses an owner-less token while the same Application stays rendered', () => {
+  // In-session an owner-less token cannot be told apart from one meant for an
+  // Application not yet rendered, so it is not adopted and the held page is not reset.
+  assert.deepEqual(
+    resolveRunCursor('app-a', {cursor: 'B-page2', owner: undefined}, false, undefined, 'A-page2'),
+    {cursor: 'A-page2', recordOwner: false, clearsStale: false}
+  );
 });
 
-test('reconcileRunCursor honours switching back to the previous Application', () => {
-  // After A to B the memory holds B's token, so A's cursor is the incoming one
-  // and must survive.
-  assert.deepEqual(reconcileRunCursor('B-page2', 'A-page2'), {cursor: 'A-page2', clearsHash: false});
+test('resolveRunCursor never adopts the outgoing Application token', () => {
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'A-page2', owner: undefined}, true, 'A-page2', undefined),
+    {recordOwner: false, clearsStale: true}
+  );
+});
+
+test('resolveRunCursor leaves an absent cursor unadopted', () => {
+  assert.deepEqual(resolveRunCursor('app-b', {}, false, undefined, 'A-page2'), {recordOwner: false, clearsStale: false});
+});
+
+test('decideSwitchedRunCursor clears the outgoing Application token from the URL', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'A-page2', owner: 'app-a'}, 'A-page2'),
+    {clearsHash: true, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor keeps and labels an owner-less incoming deep link', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'B-page2', owner: undefined}, 'A-page2'),
+    {clearsHash: false, recordOwner: true}
+  );
+});
+
+test('decideSwitchedRunCursor keeps a token the incoming Application already owns', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'B-page2', owner: 'app-b'}, 'A-page2'),
+    {clearsHash: false, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor clears a token owned by a third Application', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-c', {cursor: 'A-page2', owner: 'app-a'}, undefined),
+    {clearsHash: true, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor leaves an absent URL cursor uncleared', () => {
+  assert.deepEqual(decideSwitchedRunCursor('app-b', {}, undefined), {clearsHash: false, recordOwner: false});
 });

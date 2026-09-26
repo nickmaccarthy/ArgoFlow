@@ -154,7 +154,9 @@ test('mounted runs view clears an Application cursor before later hash navigatio
     assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], undefined);
     assert.equal(dom.container.querySelector('[aria-label="Filter by name or template"]').value, 'new');
 
-    await navigate(dom, '#argoflow:runs.source=Archive&argoflow:runs.cursor=B-page2&argoflow:runs.phase=Failed&argoflow:runs.query=report&argoflow:runs.namespace=workflows&argoflow:runs.lifecycle=completed&argoflow:runs.from=2026-09-01&argoflow:runs.to=2026-09-26');
+    // An in-session host-driven cursor change must declare the owner: an owner-less token
+    // arriving while the Application is already rendered is not attributable and is left alone.
+    await navigate(dom, '#argoflow:runs.source=Archive&argoflow:runs.cursor=B-page2&argoflow:runs.cursor.owner=app-b&argoflow:runs.phase=Failed&argoflow:runs.query=report&argoflow:runs.namespace=workflows&argoflow:runs.lifecycle=completed&argoflow:runs.from=2026-09-01&argoflow:runs.to=2026-09-26');
     assert.equal(callsB.at(-1)?.cursor, 'B-page2');
     assert.equal(dom.container.querySelector('[aria-label="Workflow run source"]').value, 'Archive');
     assert.equal(dom.container.querySelector('[aria-label="Filter by status"]').value, 'Failed');
@@ -213,6 +215,53 @@ test('coordinated host navigation keeps the incoming Application\'s deep-linked 
     assert.equal(callsB.some(call => call.cursor === 'A-page2'), false);
     // A's last recorded cursor is unchanged.
     assert.equal(callsA.at(-1)?.cursor, 'A-page2');
+  } finally {
+    dom.cleanup();
+  }
+});
+
+test('reverse host ordering keeps the incoming Application\'s owner-less cursor', async () => {
+  const dom = installDom('#argoflow:runs.source=Archive&argoflow:runs.cursor=A-page2');
+  const callsA = [];
+  const callsB = [];
+  const page = cursor => ({
+    rows: [], excluded: [], pageSize: 25, source: 'Archive', cursor, state: 'empty',
+    capability: {live: 'available', archive: {state: 'available'}}
+  });
+  const archiveA = {capability: {state: 'available'}, fetchPage: async request => { callsA.push(request); return page(request.cursor); }};
+  const archiveB = {capability: {state: 'available'}, fetchPage: async request => { callsB.push(request); return page(request.cursor); }};
+  const applicationA = {metadata: {uid: 'app-a', namespace: 'argocd', name: 'a'}};
+  const applicationB = {metadata: {uid: 'app-b', namespace: 'argocd', name: 'b'}};
+
+  try {
+    await render(React.createElement(ApplicationWorkflowsView, {application: applicationA, archive: archiveA, tree: {nodes: []}}), dom.container);
+    assert.equal(callsA.at(-1)?.cursor, 'A-page2');
+
+    // The host writes the incoming Application's cursor WITHOUT an owner and flushes the
+    // navigation while A is still rendered. A bare dispatch is required: navigate() rewrites
+    // the hash, which would mask whether the still-rendered Application adopted the token.
+    dom.window.history.replaceState(null, '', '#argoflow:runs.source=Archive&argoflow:runs.cursor=B-page2');
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
+      await Promise.resolve();
+    });
+
+    // A does not adopt an owner-less token that is not attributable to it: it keeps the page
+    // it already held, so no new request is asserted — only that its last cursor is unchanged.
+    assert.equal(callsA.at(-1)?.cursor, 'A-page2');
+    // The token survives in the URL, left for the Application it belongs to.
+    assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], 'B-page2');
+
+    // Only now does the host render application B with its own archive.
+    await render(React.createElement(ApplicationWorkflowsView, {application: applicationB, archive: archiveB, tree: {nodes: []}}), dom.container);
+
+    // The switch labels the owner-less incoming token, so the link survives and is attributed.
+    assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], 'B-page2');
+    assert.equal(parseHashState(dom.window.location.hash)['runs.cursor.owner'], 'app-b');
+    assert.equal(callsB.at(-1)?.cursor, 'B-page2');
+    // Neither Application may use the other's token.
+    assert.equal(callsB.some(call => call.cursor === 'A-page2'), false);
+    assert.equal(callsA.some(call => call.cursor === 'B-page2'), false);
   } finally {
     dom.cleanup();
   }
