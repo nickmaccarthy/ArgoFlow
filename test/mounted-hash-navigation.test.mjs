@@ -147,8 +147,11 @@ test('mounted runs view clears an Application cursor before later hash navigatio
     assert.equal(callsB.at(-1)?.cursor, undefined);
     assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], undefined);
 
-    await navigate(dom, '#argoflow:runs.source=Archive&argoflow:runs.query=new');
+    // A history/host navigation can reintroduce the outgoing cursor along with
+    // a changed query. It must not become B's cursor even though B is mounted.
+    await navigate(dom, '#argoflow:runs.source=Archive&argoflow:runs.cursor=A-page2&argoflow:runs.query=new');
     assert.equal(callsB.some(call => call.cursor === 'A-page2'), false);
+    assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], undefined);
     assert.equal(dom.container.querySelector('[aria-label="Filter by name or template"]').value, 'new');
 
     await navigate(dom, '#argoflow:runs.source=Archive&argoflow:runs.cursor=B-page2&argoflow:runs.phase=Failed&argoflow:runs.query=report&argoflow:runs.namespace=workflows&argoflow:runs.lifecycle=completed&argoflow:runs.from=2026-09-01&argoflow:runs.to=2026-09-26');
