@@ -135,6 +135,13 @@ jobs:
           # transport on sustained failure; do not rerun smoke assertions.
           node scripts/supervised-smoke.mjs node scripts/e2e-smoke.mjs
 
+      # No raw pod logs or event messages: the collector emits only bounded,
+      # allowlisted state/restart/reason fields. Its failure cannot mask smoke.
+      - name: Collect failure-only Kubernetes diagnostics
+        if: failure()
+        timeout-minutes: 1
+        run: node scripts/smoke-diagnostics.mjs || true
+
       - name: Collect smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -142,7 +149,6 @@ jobs:
           name: smoke-evidence-${{ matrix.argocd }}
           path: |
             artifacts/
-            artifacts-portforward.log
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
