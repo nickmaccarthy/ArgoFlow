@@ -301,6 +301,13 @@ npm run check
 - Deterministic large-fixture validation
 - Node test suite
 
+The CI compatibility job runs `scripts/e2e-smoke.mjs` against each pinned Argo CD
+version through `scripts/supervised-smoke.mjs`. The supervisor probes the
+port-forward's HTTP `/healthz` endpoint throughout the smoke, restarts the
+forward after two consecutive failed probes or a process exit, and fails if
+recovery cannot be verified (up to three restarts). It never reruns smoke
+assertions; the forward log is uploaded as `artifacts-portforward.log`.
+
 Useful paths:
 
 ```text

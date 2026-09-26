@@ -131,25 +131,9 @@ jobs:
           set -euo pipefail
           ARGOCD_PASSWORD="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
           export ARGOCD_PASSWORD
-          kubectl -n argocd port-forward svc/argocd-server 8090:443 >artifacts-portforward.log 2>&1 &
-          echo $! > portforward.pid
-          trap 'kill "$(cat portforward.pid)" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 30); do
-            if curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null; then break; fi
-            sleep 2
-          done
-          echo '--- /api/v1/extensions ---'
-          curl -sk "https://127.0.0.1:8090/api/v1/extensions" | head -c 2000 || true
-          echo
-          echo '--- bundle HTTP status ---'
-          curl -sk -o /dev/null -w '%{http_code}\n' "https://127.0.0.1:8090/extensions/extension-argoflow.js" || true
-          echo '--- loader head ---'
-          curl -sk "https://127.0.0.1:8090/extensions.js" | head -c 1200 || true
-          echo
-          echo '--- argocd-server extension dir ---'
-          kubectl -n argocd exec deploy/argocd-server -- sh -c 'ls -la /tmp/extensions; cat /shared/app/ui/extensions.sh 2>/dev/null | head -c 500' || true
-          curl -skf "https://127.0.0.1:8090/healthz?full=true" >/dev/null
-          node scripts/e2e-smoke.mjs
+          # Probe HTTP throughout the run, not only before it. Restart only the
+          # transport on sustained failure; do not rerun smoke assertions.
+          node scripts/supervised-smoke.mjs node scripts/e2e-smoke.mjs
 
       - name: Collect smoke evidence
         if: always()
