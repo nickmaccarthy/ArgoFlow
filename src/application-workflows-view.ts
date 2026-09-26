@@ -494,12 +494,13 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
   const [filters, setFilters] = React.useState<RunFilters>(() => decodeRunViewHash(hashState).filters);
   const applicationName = application?.metadata?.name || 'Selected Application';
 
-  // A cursor belongs to the Application that produced it. Remember the outgoing
-  // Application's token instead of clearing the key outright: the host can render the
-  // next Application with a new deep-linked cursor already in the URL, and clearing the
-  // key here would discard a valid link for the Application now being rendered. The ref
-  // is deliberately not a dependency — re-running once the state settles would erase the
-  // memory of the token that must stay rejected.
+  // A cursor belongs to the Application that produced it, so a switch resolves the URL
+  // from the LIVE URL: the outgoing Application's token is dropped, a token the incoming
+  // Application already owns is kept, and an owner-less one is labelled as the incoming
+  // Application's rather than discarded. The live URL is the source of truth here — the
+  // hook's state only refreshes on hashchange, so mid-navigation it still holds the
+  // outgoing Application's snapshot. `cursorState.cursor` is read but deliberately not a
+  // dependency: re-running once the state settles would erase the token being compared.
   React.useEffect(() => {
     if (!applicationChanged) return;
     staleCursorRef.current = cursorState.cursor;
