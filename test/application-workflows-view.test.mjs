@@ -5,15 +5,25 @@ import {
   DEFAULT_RUN_FILTERS,
   RUN_AUTO_REFRESH_INTERVAL_MS,
   cursorForApplication,
+  decodeRunViewHash,
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
+  RUN_CURSOR_HASH_KEY,
+  RUN_FROM_HASH_KEY,
+  RUN_LIFECYCLE_HASH_KEY,
+  RUN_QUERY_HASH_KEY,
+  RUN_NAMESPACE_HASH_KEY,
+  RUN_PHASE_HASH_KEY,
+  RUN_SOURCE_HASH_KEY,
+  RUN_TO_HASH_KEY,
   shouldAutoRefreshRunPage,
   workflowApplicationKey,
   workflowRunHref,
   workflowRunSourceText
 } from '../src/application-workflows-view.ts';
 import {pageWorkflowIdentities} from '../src/workflow-runs.ts';
+import {parseHashState, serializeHashState} from '../src/url-state.ts';
 
 test('selects a stable, bounded first page of Workflow tree identities', () => {
   const nodes = [
@@ -122,12 +132,95 @@ test('hash state re-reads every navigation instead of trusting written hashes', 
   assert.doesNotMatch(source, /writtenRef/);
 });
 
-test('run filters and cursors round-trip through namespaced hash state', async () => {
-  const {parseHashState} = await import('../src/url-state.ts');
+test('run filters and cursors round-trip through namespaced hash state', () => {
   const hash = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c2&argoflow:runs.phase=Running&argoflow:runs.query=pay';
   const state = parseHashState(hash);
   assert.equal(state['runs.source'], 'Archive');
   assert.equal(state['runs.cursor'], 'c2');
   assert.equal(state['runs.phase'], 'Running');
   assert.equal(state['runs.query'], 'pay');
+});
+
+test('decodeRunViewHash empty hash returns Live source and DEFAULT_RUN_FILTERS', () => {
+  const state = parseHashState('');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+  assert.equal(result.cursor, undefined);
+  assert.deepEqual(result.filters, DEFAULT_RUN_FILTERS);
+});
+
+test('decodeRunViewHash garbage phase returns empty string', () => {
+  const state = parseHashState('#argoflow:runs.phase=zzz');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.filters.phase, '');
+});
+
+test('decodeRunViewHash garbage lifecycle returns all', () => {
+  const state = parseHashState('#argoflow:runs.lifecycle=zzz');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.filters.lifecycle, 'all');
+});
+
+test('decodeRunViewHash source Live returns Live', () => {
+  const state = parseHashState('#argoflow:runs.source=Live');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+});
+
+test('decodeRunViewHash source Nonsense returns Live', () => {
+  const state = parseHashState('#argoflow:runs.source=Nonsense');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+});
+
+test('decodeRunViewHash valid deep link restores all fields end-to-end', () => {
+  const serialized = serializeHashState('#', {
+    [RUN_SOURCE_HASH_KEY]: 'Archive',
+    [RUN_CURSOR_HASH_KEY]: 'c2',
+    [RUN_PHASE_HASH_KEY]: 'Running',
+    [RUN_QUERY_HASH_KEY]: 'pay',
+    [RUN_NAMESPACE_HASH_KEY]: 'payments',
+    [RUN_LIFECYCLE_HASH_KEY]: 'active',
+    [RUN_FROM_HASH_KEY]: '2026-08-01',
+    [RUN_TO_HASH_KEY]: '2026-08-20'
+  });
+  const state = parseHashState(serialized);
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Archive');
+  assert.equal(result.cursor, 'c2');
+  assert.equal(result.filters.phase, 'Running');
+  assert.equal(result.filters.query, 'pay');
+  assert.equal(result.filters.namespace, 'payments');
+  assert.equal(result.filters.lifecycle, 'active');
+  assert.equal(result.filters.from, '2026-08-01');
+  assert.equal(result.filters.to, '2026-08-20');
+});
+
+test('decodeRunViewHash cursor passthrough', () => {
+  // present
+  const state1 = parseHashState('#argoflow:runs.cursor=c2');
+  assert.equal(decodeRunViewHash(state1).cursor, 'c2');
+
+  // absent
+  const state2 = parseHashState('#argoflow:runs.source=Live');
+  assert.equal(decodeRunViewHash(state2).cursor, undefined);
+});
+
+test('decodeRunViewHash back/forward semantics', () => {
+  // Hash A: Archive with cursor and phase
+  const hashA = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c1&argoflow:runs.phase=Running&argoflow:runs.query=pay';
+  const stateA = parseHashState(hashA);
+  const resultA = decodeRunViewHash(stateA);
+  assert.equal(resultA.source, 'Archive');
+  assert.equal(resultA.cursor, 'c1');
+  assert.equal(resultA.filters.phase, 'Running');
+  assert.equal(resultA.filters.query, 'pay');
+
+  // Hash B: Live with no cursor/filters
+  const hashB = '#argoflow:runs.source=Live';
+  const stateB = parseHashState(hashB);
+  const resultB = decodeRunViewHash(stateB);
+  assert.equal(resultB.source, 'Live');
+  assert.equal(resultB.cursor, undefined);
+  assert.deepEqual(resultB.filters, DEFAULT_RUN_FILTERS);
 });

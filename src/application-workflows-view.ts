@@ -12,7 +12,7 @@ import {
 import {WORKFLOW_PHASES, workflowPhaseColor, type WorkflowPhase} from './workflow-resource.ts';
 import {emitExtensionTelemetry, telemetryNow} from './telemetry.ts';
 import {useHashState} from './url-state.ts';
-
+import type {HashState} from './url-state.ts';
 export interface RunFilters {
   phase: '' | WorkflowPhase;
   query: string;
@@ -27,6 +27,41 @@ export const DEFAULT_RUN_FILTERS: RunFilters = {
 };
 
 export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
+export const RUN_SOURCE_HASH_KEY = 'runs.source';
+export const RUN_CURSOR_HASH_KEY = 'runs.cursor';
+export const RUN_PHASE_HASH_KEY = 'runs.phase';
+export const RUN_QUERY_HASH_KEY = 'runs.query';
+export const RUN_NAMESPACE_HASH_KEY = 'runs.namespace';
+export const RUN_LIFECYCLE_HASH_KEY = 'runs.lifecycle';
+export const RUN_FROM_HASH_KEY = 'runs.from';
+export const RUN_TO_HASH_KEY = 'runs.to';
+
+export interface RunViewHashState {
+  source: RunSource;
+  cursor?: string;
+  filters: RunFilters;
+}
+
+/**
+ * Decodes the hash state relevant to the Run view, using the same validation
+ * logic as the mount initializers. This is the single source of truth for both
+ * the mount path and the reconciliation path (reconciliation validates through
+ * the same codecs used on mount).
+ */
+export function decodeRunViewHash(hashState: HashState): RunViewHashState {
+  return {
+    source: hashState[RUN_SOURCE_HASH_KEY] === 'Archive' ? 'Archive' : 'Live',
+    cursor: hashState[RUN_CURSOR_HASH_KEY],
+    filters: {
+      phase: (WORKFLOW_PHASES as readonly string[]).includes(hashState[RUN_PHASE_HASH_KEY] ?? '') ? hashState[RUN_PHASE_HASH_KEY] as WorkflowPhase : '',
+      lifecycle: ['active', 'completed'].includes(hashState[RUN_LIFECYCLE_HASH_KEY] ?? '') ? hashState[RUN_LIFECYCLE_HASH_KEY] as RunFilters['lifecycle'] : 'all',
+      query: hashState[RUN_QUERY_HASH_KEY] ?? '',
+      namespace: hashState[RUN_NAMESPACE_HASH_KEY] ?? '',
+      from: hashState[RUN_FROM_HASH_KEY] ?? '',
+      to: hashState[RUN_TO_HASH_KEY] ?? ''
+    }
+  };
+}
 
 /**
  * True when polling should tick: tab visible, no error on the current page,
@@ -34,6 +69,7 @@ export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
  * Errored, permission-limited, and unavailable pages generate zero traffic
  * (issue #4); a retained prior page must not keep polling after a failure.
  */
+
 export function shouldAutoRefreshRunPage(rows: readonly WorkflowRunRow[], hidden?: boolean, error?: string, state?: RunPage['state']): boolean {
   if (hidden === true || error) return false;
   if (state === 'permission' || state === 'error' || state === 'unavailable') return false;
@@ -376,12 +412,12 @@ function RunStats({rows}: {rows: WorkflowRunRow[]}) {
 }
 
 export function ApplicationWorkflowsView({application, tree, archive, baseUrl, fetcher}: ApplicationWorkflowsViewProps) {
-  const [hashState, patchHash] = useHashState();
+  const [hashState, patchHash, externalRevision] = useHashState();
   const applicationKey = workflowApplicationKey(application);
-  const [source, setSource] = React.useState<RunSource>(() => hashState['runs.source'] === 'Archive' ? 'Archive' : 'Live');
+  const [source, setSource] = React.useState<RunSource>(() => decodeRunViewHash(hashState).source);
   const [cursorState, setCursorState] = React.useState<{applicationKey: string; cursor?: string}>(() => ({
     applicationKey,
-    cursor: hashState['runs.cursor']
+    cursor: decodeRunViewHash(hashState).cursor
   }));
   const cursor = cursorForApplication(cursorState, applicationKey);
   const setCursor = (next?: string) => setCursorState({applicationKey, cursor: next});
@@ -390,18 +426,7 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
   const [error, setError] = React.useState<string>();
   const [refreshToken, setRefreshToken] = React.useState(0);
   const [hidden, setHidden] = React.useState(false);
-  const [filters, setFilters] = React.useState<RunFilters>(() => {
-    const phase = (WORKFLOW_PHASES as readonly string[]).includes(hashState['runs.phase'] ?? '') ? hashState['runs.phase'] as WorkflowPhase : '';
-    const lifecycle = ['active', 'completed'].includes(hashState['runs.lifecycle'] ?? '') ? hashState['runs.lifecycle'] as RunFilters['lifecycle'] : 'all';
-    return {
-      phase,
-      query: hashState['runs.query'] ?? '',
-      namespace: hashState['runs.namespace'] ?? '',
-      lifecycle,
-      from: hashState['runs.from'] ?? '',
-      to: hashState['runs.to'] ?? ''
-    };
-  });
+  const [filters, setFilters] = React.useState<RunFilters>(() => decodeRunViewHash(hashState).filters);
   const applicationName = application?.metadata?.name || 'Selected Application';
 
   // Polling pauses while the tab is hidden; returning to the tab triggers an immediate refresh.
@@ -484,27 +509,41 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     };
   }, [application, applicationKey, archive, baseUrl, cursor, fetcher, refreshToken, requestKey, source, tree]);
 
+  // External hash navigation (back/forward, manual edits, host-driven) is
+  // authoritative: re-derive the deep-linkable inputs through the same decoder
+  // used on mount. Keyed on externalRevision alone — own patches write through
+  // replaceState, which never fires hashchange, so the view cannot fight its own
+  // writes. The initial pass is skipped so mount defaults survive. The request
+  // effect reloads on its own because source/cursor/requestKey change here.
+  React.useEffect(() => {
+    if (externalRevision === 0) return;
+    const next = decodeRunViewHash(hashState);
+    setSource(next.source);
+    setCursorState({applicationKey, cursor: next.cursor});
+    setFilters(next.filters);
+  }, [externalRevision]);
+
   const rows = React.useMemo(() => filterWorkflowRunRows(page?.rows || [], filters), [filters, page]);
   const updateFilters = (next: RunFilters) => {
     setFilters(next);
     patchHash({
-      'runs.phase': next.phase || undefined,
-      'runs.query': next.query || undefined,
-      'runs.namespace': next.namespace || undefined,
-      'runs.lifecycle': next.lifecycle === 'all' ? undefined : next.lifecycle,
-      'runs.from': next.from || undefined,
-      'runs.to': next.to || undefined
+      [RUN_PHASE_HASH_KEY]: next.phase || undefined,
+      [RUN_QUERY_HASH_KEY]: next.query || undefined,
+      [RUN_NAMESPACE_HASH_KEY]: next.namespace || undefined,
+      [RUN_LIFECYCLE_HASH_KEY]: next.lifecycle === 'all' ? undefined : next.lifecycle,
+      [RUN_FROM_HASH_KEY]: next.from || undefined,
+      [RUN_TO_HASH_KEY]: next.to || undefined
     });
   };
   const changeSource = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const next = event.currentTarget.value as RunSource;
     setSource(next);
     setCursor(undefined);
-    patchHash({'runs.source': next === 'Archive' ? next : undefined, 'runs.cursor': undefined});
+    patchHash({[RUN_SOURCE_HASH_KEY]: next === 'Archive' ? next : undefined, [RUN_CURSOR_HASH_KEY]: undefined});
   };
   const changeCursor = (next?: string) => {
     setCursor(next);
-    patchHash({'runs.cursor': next});
+    patchHash({[RUN_CURSOR_HASH_KEY]: next});
   };
   const unavailableApplication = !application?.metadata?.name;
 
