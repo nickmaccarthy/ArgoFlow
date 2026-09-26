@@ -76,6 +76,7 @@ test('mounted Workflow workspace reconciles external hash navigation and ignores
     assert.equal(dom.container.querySelector('input[type="search"]').value, 'rep');
     assert.equal(dom.container.querySelector('[aria-label="Remove Failed filter"]')?.textContent, 'Failed×');
     assert.equal(dom.container.querySelector('[aria-label="Selected node details"] h4')?.textContent, 'report');
+    assert.deepEqual([...dom.container.querySelectorAll('.wf-status-cell')].map(cell => cell.getAttribute('aria-label')), ['report: Failed']);
 
     const gridState = parseHashState(dom.window.location.hash);
     await act(async () => {
@@ -85,6 +86,27 @@ test('mounted Workflow workspace reconciles external hash navigation and ignores
     assert.deepEqual(parseHashState(dom.window.location.hash), gridState);
     assert.equal(pressed(dom.container, 'Grid'), true);
     assert.equal(dom.container.querySelector('[aria-label="Selected node details"] h4')?.textContent, 'report');
+
+    // A local change after external navigation must not be rolled back by the
+    // hash state the view itself just patched.
+    await act(async () => {
+      dom.container.querySelector('.wf-segmented button:nth-child(2)').dispatchEvent(new dom.window.MouseEvent('click', {bubbles: true}));
+      await Promise.resolve();
+    });
+    assert.equal(pressed(dom.container, 'List'), true);
+    assert.equal(parseHashState(dom.window.location.hash)['run.view'], 'list');
+    assert.equal(dom.container.querySelector('input[type="search"]').value, 'rep');
+    assert.equal(dom.container.querySelector('[aria-label="Workflow nodes"] [role="table"]')?.getAttribute('aria-rowcount'), '2');
+    assert.equal(dom.container.querySelector('[aria-label="Selected node details"] h4')?.textContent, 'report');
+
+    // Absent keys must clear the previous query, phase and node selection in
+    // the mounted view, rather than reusing the mount-time default node.
+    await navigate(dom, '#argoflow:run.view=list');
+    assert.equal(pressed(dom.container, 'List'), true);
+    assert.equal(dom.container.querySelector('input[type="search"]').value, '');
+    assert.equal(dom.container.querySelector('[aria-label^="Remove "]'), null);
+    assert.equal(dom.container.querySelector('[aria-label="Workflow nodes"] [role="table"]')?.getAttribute('aria-rowcount'), '4');
+    assert.equal(dom.container.querySelector('[aria-label="Selected node details"]'), null);
 
     await navigate(dom, '#argoflow:run.view=invalid&argoflow:run.phases=invalid&argoflow:run.node=missing');
 
