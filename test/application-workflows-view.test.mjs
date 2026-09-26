@@ -9,6 +9,7 @@ import {
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
+  reconcileRunCursor,
   RUN_CURSOR_HASH_KEY,
   RUN_FROM_HASH_KEY,
   RUN_LIFECYCLE_HASH_KEY,
@@ -223,4 +224,35 @@ test('decodeRunViewHash back/forward semantics', () => {
   assert.equal(resultB.source, 'Live');
   assert.equal(resultB.cursor, undefined);
   assert.deepEqual(resultB.filters, DEFAULT_RUN_FILTERS);
+});
+
+test('reconcileRunCursor rejects the outgoing Application cursor retained in the hash', () => {
+  // The hash still carries the Application we are leaving; its page token is
+  // meaningless to the incoming Application, so it is never adopted and the
+  // live URL must be told to drop it.
+  assert.deepEqual(reconcileRunCursor('A-page2', 'A-page2'), {cursor: undefined, clearsHash: true});
+});
+
+test('reconcileRunCursor honours a coordinated host navigation cursor', () => {
+  // The host wrote the incoming Application's cursor before dispatching
+  // hashchange; it belongs to the Application now being rendered.
+  assert.deepEqual(reconcileRunCursor('A-page2', 'B-page2'), {cursor: 'B-page2', clearsHash: false});
+});
+
+test('reconcileRunCursor adopts an ordinary cursor deep link with no stale memory', () => {
+  // First Application render: nothing to compare against, so the cursor is
+  // honoured and nothing is cleared.
+  assert.deepEqual(reconcileRunCursor(undefined, 'A-page2'), {cursor: 'A-page2', clearsHash: false});
+});
+
+test('reconcileRunCursor leaves an absent hash cursor unadopted and uncleared', () => {
+  // Stale memory exists but the hash carries no cursor: nothing to adopt and
+  // nothing to clear.
+  assert.deepEqual(reconcileRunCursor('A-page2', undefined), {cursor: undefined, clearsHash: false});
+});
+
+test('reconcileRunCursor honours switching back to the previous Application', () => {
+  // After A to B the memory holds B's token, so A's cursor is the incoming one
+  // and must survive.
+  assert.deepEqual(reconcileRunCursor('B-page2', 'A-page2'), {cursor: 'A-page2', clearsHash: false});
 });

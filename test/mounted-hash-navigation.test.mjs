@@ -148,3 +148,47 @@ test('mounted runs view clears an Application cursor before later hash navigatio
     dom.cleanup();
   }
 });
+
+test('coordinated host navigation keeps the incoming Application\'s deep-linked cursor', async () => {
+  const dom = installDom('#argoflow:runs.source=Archive&argoflow:runs.cursor=A-page2');
+  const callsA = [];
+  const callsB = [];
+  const page = cursor => ({
+    rows: [], excluded: [], pageSize: 25, source: 'Archive', cursor, state: 'empty',
+    capability: {live: 'available', archive: {state: 'available'}}
+  });
+  const archiveA = {capability: {state: 'available'}, fetchPage: async request => { callsA.push(request); return page(request.cursor); }};
+  const archiveB = {capability: {state: 'available'}, fetchPage: async request => { callsB.push(request); return page(request.cursor); }};
+  const applicationA = {metadata: {uid: 'app-a', namespace: 'argocd', name: 'a'}};
+  const applicationB = {metadata: {uid: 'app-b', namespace: 'argocd', name: 'b'}};
+
+  try {
+    await render(React.createElement(ApplicationWorkflowsView, {application: applicationA, archive: archiveA, tree: {nodes: []}}), dom.container);
+    assert.equal(callsA.at(-1)?.cursor, 'A-page2');
+
+    // Model coordinated navigation: update the URL hash to B's cursor before B renders,
+    // without dispatching hashchange (simulating the URL being updated first).
+    dom.window.history.replaceState(null, '', '#argoflow:runs.source=Archive&argoflow:runs.cursor=B-page2');
+
+    await render(React.createElement(ApplicationWorkflowsView, {application: applicationB, archive: archiveB, tree: {nodes: []}}), dom.container);
+
+    // Dispatch that navigation's hashchange WITHOUT rewriting the hash: re-writing it
+    // here would mask the regression, because the pre-fix switch effect deleted the
+    // incoming cursor from the URL and a helper that re-sets it would restore it.
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
+      await Promise.resolve();
+    });
+
+    // The valid deep link survives: B-page2 is preserved in the hash.
+    assert.equal(parseHashState(dom.window.location.hash)['runs.cursor'], 'B-page2');
+    // B loads its page 2, not its first page.
+    assert.equal(callsB.at(-1)?.cursor, 'B-page2');
+    // The outgoing Application's token never crosses over.
+    assert.equal(callsB.some(call => call.cursor === 'A-page2'), false);
+    // A's last recorded cursor is unchanged.
+    assert.equal(callsA.at(-1)?.cursor, 'A-page2');
+  } finally {
+    dom.cleanup();
+  }
+});
