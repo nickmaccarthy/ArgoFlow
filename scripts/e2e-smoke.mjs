@@ -14,6 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import {mkdirSync} from 'node:fs';
+import {startNetworkDiagnostics, startHeartbeat, viewSwitchCheck} from './smoke-diagnostics.mjs';
 
 import puppeteer from 'puppeteer-core';
 
@@ -36,21 +37,6 @@ function log(step) {
 // rendering, and telemetry problems turn the compatibility job red.
 const STRICT_VIEW_SWITCH = process.env.ARGOFLOW_SMOKE_STRICT === '1';
 
-async function viewSwitchCheck(page, run) {
-  try {
-    await run();
-    log('view-switch deep-link verified');
-  } catch (error) {
-    const message = `view-switch deep-link check failed (${STRICT_VIEW_SWITCH ? 'blocking' : 'warn-only while stabilizing'}): ${error.message}`;
-    if (STRICT_VIEW_SWITCH) throw new Error(message);
-    console.warn(`[smoke][WARN] ${message}`);
-    try {
-      await shot(page, '04-view-switch-failure');
-    } catch {
-      // Evidence screenshot is best-effort.
-    }
-  }
-}
 
 async function textExists(page, selector, text, timeoutMs) {
   await page.waitForFunction(
@@ -111,21 +97,14 @@ async function clickExtensionTab(page, {icon}, timeoutMs = 120000) {
           await handle.click();
         }
       } catch (clickError) {
-        log(`click on ${icon} failed, rescanning: ${clickError.message}`);
+        log(`click on ${icon} failed, rescanning`);
         await new Promise(resolve => setTimeout(resolve, 2000));
         continue;
       }
-      log(`clicked extension tab icon ${icon} after ${scans} scans: ${JSON.stringify(last)}`);
-      // Evidence dump: Argo CD's toggle handler navigates to ?view=<title>;
-      // if the panel still fails to mount this shows whether the switch
-      // registered and which toggle is marked selected.
+      log(`clicked extension tab icon ${icon} after ${scans} scans`);
+      // Allow the view toggle to settle before asserting its mounted panel.
       await new Promise(resolve => setTimeout(resolve, 3000));
-      log('after-click ' + JSON.stringify(await page.evaluate(() => ({
-        href: location.href,
-        viewParam: new URLSearchParams(location.search).get('view'),
-        selectedToggles: [...document.querySelectorAll('.application-details__view-type i.selected, .application-details__view-type i[class*="selected"]')].map(node => node.title || node.className),
-        extensionMounted: !!document.querySelector('#workflow-extension')
-      }))));
+      log('extension tab clicked');
       return last;
     }
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -156,7 +135,7 @@ async function gotoWithRetry(page, url, attempts = 6) {
       return;
     } catch (error) {
       lastError = error;
-      console.log(`[smoke] goto ${url} failed (attempt ${attempt}): ${String(error.message).split('\n')[0]}`);
+      console.log(`[smoke] navigation failed (attempt ${attempt})`);
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
@@ -167,6 +146,7 @@ async function shot(page, name) {
   await page.screenshot({path: `artifacts/${name}.png`, fullPage: true});
 }
 
+try {
 const browser = await puppeteer.launch({
   executablePath: CHROME_PATH,
   headless: true,
@@ -177,20 +157,19 @@ const browser = await puppeteer.launch({
 
 try {
   const page = await browser.newPage();
+  let phase = 'setup';
+  const mark = name => { phase = name; console.log(`[smoke-diag] ${JSON.stringify({timestamp: new Date().toISOString(), phase, event: 'phase_start'})}`); };
+  const stopNetwork = startNetworkDiagnostics(page, () => phase);
+  const heartbeatSession = await page.createCDPSession();
+  const stopHeartbeat = startHeartbeat(heartbeatSession, () => phase);
+  try {
   page.setDefaultTimeout(60000);
   await page.setViewport({width: 1600, height: 1000});
 
-  // Surface everything the browser tells us: console lines and page errors.
-  const browserConsole = [];
-  page.on('console', message => {
-    const line = `[browser:${message.type()}] ${message.text()}`;
-    browserConsole.push(line);
-    console.log(line);
-  });
-  page.on('pageerror', error => {
-    const line = `[browser:pageerror] ${error.message}`;
-    browserConsole.push(line);
-    console.log(line);
+  // Browser messages can contain request URLs, credentials or resource names.
+  let pageErrors = 0;
+  page.on('pageerror', () => {
+    if (pageErrors++ < 10) console.log('[smoke] browser pageerror');
   });
 
   // Capture the extension's anonymous telemetry stream for contract assertions.
@@ -201,7 +180,7 @@ try {
     });
   });
 
-  log(`opening ${BASE_URL}`);
+  mark('login');
   await gotoWithRetry(page, `${BASE_URL}/login`);
 
   // Login form: username is the non-password input inside the same form scope.
@@ -218,44 +197,22 @@ try {
   log('logged in as admin');
 
   // Open the fixture Application.
+  mark('application');
   await gotoWithRetry(page, `${BASE_URL}/applications/${APP_NAME}`);
   await textExists(page, 'body', APP_NAME, 60000);
   log('application page loaded');
 
-  // Why aren't the extension tabs there? Dump what the host actually loaded.
-  const diagnostics = await page.evaluate(() => ({
-    href: location.href,
-    extensionScripts: [...document.querySelectorAll('script')].map(script => script.getAttribute('src')).filter(src => src && src.includes('extension')),
-    extensionsApiType: typeof window.extensionsAPI,
-    tabLikeTexts: [...document.querySelectorAll('[class*="tab" i], [role="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 80),
-    switcherButtons: [...document.querySelectorAll('button')].map(button => ({
-      text: (button.textContent || '').trim().slice(0, 24),
-      title: button.getAttribute('title'),
-      ariaLabel: button.getAttribute('aria-label'),
-      icon: button.querySelector('i') ? String(button.querySelector('i').className).slice(0, 80) : ''
-    })).filter(info => info.title || info.ariaLabel || info.icon).slice(0, 40),
-    telemetryCount: (window.__argoflowTelemetry || []).length,
-    iconProbe: ['fa-bolt', 'fa-project-diagram'].map(cls => ({
-      cls,
-      matches: [...document.querySelectorAll(`.${cls}`)].map(element => ({
-        tag: element.tagName,
-        cls: String(element.className).slice(0, 80),
-        parentTag: element.parentElement ? element.parentElement.tagName : '',
-        parentCls: String((element.parentElement && element.parentElement.className) || '').slice(0, 100),
-        text: element.parentElement ? (element.parentElement.textContent || '').trim().slice(0, 40) : ''
-      })).slice(0, 10)
-    })),
-  }));
-  console.log(`[smoke] diagnostics ${JSON.stringify(diagnostics, null, 2)}`);
   await shot(page, '00-application-page');
 
   // The Workflows app-view extension must render its bounded runs table.
+  mark('workflows_mount');
   await clickExtensionTab(page, {icon: 'fa-project-diagram'});
   await page.waitForSelector('#workflow-extension[aria-label="Workflow runs"]');
   await textExists(page, '#workflow-extension', 'Filters apply to this page', 30000);
 
   // Wait for the synced fixture run to appear; auto-refresh converges without clicks.
   log('waiting for the fixture Workflow row (auto-refresh should converge)');
+  mark('fixture_row_wait');
   await textExists(page, '#workflow-extension', WORKFLOW_NAME, RUN_PAGE_TIMEOUT_MS);
   await shot(page, '01-workflows-view');
   log('workflows view rendered with the fixture run');
@@ -267,6 +224,7 @@ try {
   log('app-view telemetry contract verified');
 
   // The Events app-view extension must render EventSource inventory.
+  mark('events_view');
   await clickExtensionTab(page, {icon: 'fa-bolt'});
   await page.waitForSelector('#workflow-extension');
   await textExists(page, '#workflow-extension', 'EventSource', 60000);
@@ -277,6 +235,7 @@ try {
   // Argo CD's background application refresh can transiently drop the
   // extension content (a failed live-state fetch omits extension tabs until
   // the next render), so one navigation retry is allowed before failing.
+  mark('resource_dag');
   const resourcePath = encodeURIComponent(`argoproj.io/Workflow/argoflow-e2e/${WORKFLOW_NAME}/0`);
   const deepLinkUrl = `${BASE_URL}/applications/${APP_NAME}?view=tree&resource=&node=${resourcePath}&tab=extension-0`;
   let deepLinkAttempt = 0;
@@ -288,29 +247,15 @@ try {
       await textExists(page, '.wf-workspace', 'Workflow graph', 30000);
       break;
     } catch (error) {
-      // Decisive evidence: distinguishes panel-not-open vs wrong tab vs
-      // extension stuck in a notice state. Diagnostics are best-effort — a
-      // failed dump or screenshot must never replace the original failure.
-      try {
-        log('deep-link failure dump ' + JSON.stringify(await page.evaluate(() => ({
-          href: location.href,
-          panelShown: !!document.querySelector('.application-details__sliding-panel, [class*="sliding-panel"]'),
-          panelText: (document.querySelector('[class*="sliding-panel"]')?.textContent || '').slice(0, 400),
-          tabs: [...document.querySelectorAll('[class*="tab"]')].map(node => (node.textContent || '').trim()).filter(Boolean).slice(0, 24),
-          wfExtensionMounted: !!document.querySelector('#workflow-extension'),
-          wfExtensionText: (document.querySelector('#workflow-extension')?.textContent || '').slice(0, 300),
-          dagShell: !!document.querySelector('.wf-dag-shell')
-        }))));
-      } catch (dumpError) {
-        log(`deep-link failure dump itself failed: ${dumpError.message}`);
-      }
+      // Evidence is best-effort; never replace the original failure.
+      log('deep-link attempt failed');
       try {
         await shot(page, '03-deeplink-failure');
-      } catch (shotError) {
-        log(`deep-link failure screenshot failed: ${shotError.message}`);
+      } catch {
+        log('deep-link failure screenshot failed');
       }
       if (deepLinkAttempt >= 2) throw error;
-      log(`deep-link attempt ${deepLinkAttempt} failed (${error.message.split('\n')[0]}); retrying navigation once`);
+      log(`deep-link attempt ${deepLinkAttempt} failed; retrying navigation once`);
     }
   }
   await shot(page, '03-workflow-dag');
@@ -319,20 +264,38 @@ try {
   // toggle-click assertion runs warn-only (ARGOFLOW_SMOKE_STRICT=1 makes it
   // blocking) while the interaction stabilizes — every other assertion above
   // and below is blocking, so registration/rendering failures stay red.
-  await viewSwitchCheck(page, async () => {
+  mark('view_switch');
+  await viewSwitchCheck(async () => {
     await clickButtonWithText(page, 'Grid');
     await page.waitForFunction(() => location.hash.includes('argoflow:run.view=grid'), {timeout: 15000, polling: 500});
     await shot(page, '04-workflow-grid-deeplink');
-  });
+  }, {strict: STRICT_VIEW_SWITCH, warn: () => console.warn('[smoke][WARN] view-switch deep-link check failed'), screenshot: () => shot(page, '04-view-switch-failure')});
   log('resource tab DAG rendered');
 
   // Resource-tab document: fresh load after the deep link, so only the
   // extension lifecycle events of THIS document are asserted here.
   const events = await page.evaluate(() => window.__argoflowTelemetry || []);
   assertTelemetryContract(events, {expect: ['workflow.ready']});
-  console.log('[smoke] telemetry contract verified:', JSON.stringify(events));
+  console.log('[smoke] telemetry contract verified');
 
   console.log('[smoke] PASS');
+  } finally {
+    stopHeartbeat();
+    stopNetwork();
+    void heartbeatSession.detach().catch(() => {});
+  }
 } finally {
-  await browser.close();
+  let closeTimer;
+  try {
+    await Promise.race([
+      browser.close(),
+      new Promise(resolve => { closeTimer = setTimeout(() => { browser.process()?.kill('SIGKILL'); resolve(); }, 4000); })
+    ]);
+  } finally {
+    clearTimeout(closeTimer);
+  }
+}
+} catch {
+  console.error('[smoke] FAIL');
+  process.exitCode = 1;
 }
