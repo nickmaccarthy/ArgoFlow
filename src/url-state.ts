@@ -55,9 +55,16 @@ export function serializeHashState(hash: string, state: HashState): string {
  * Deep-linkable UI state without touching the Argo CD router: values live under
  * namespaced keys of location.hash, restored on mount and on back/forward, written
  * with replaceState so browser history stays clean.
+ *
+ * The third element counts navigations the hook did not perform (back/forward,
+ * manual hash edits, host-driven navigation) so a mounted view can reconcile its
+ * local state against the URL. It is deliberately a separate signal from `state`:
+ * a view must not reconcile on its own patches, and replaceState never fires
+ * hashchange, so `patch` leaves the revision untouched.
  */
-export function useHashState(): [HashState, (patch: Record<string, string | undefined>) => void] {
+export function useHashState(): [HashState, (patch: Record<string, string | undefined>) => void, number] {
   const [state, setState] = React.useState<HashState>(() => parseHashState(typeof window === 'undefined' ? '' : window.location.hash));
+  const [externalRevision, setExternalRevision] = React.useState(0);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -68,6 +75,9 @@ export function useHashState(): [HashState, (patch: Record<string, string | unde
       // Canonical-JSON equality skips no-op events without going stale.
       const next = parseHashState(window.location.hash);
       setState(previous => (JSON.stringify(next) === JSON.stringify(previous) ? previous : next));
+      // Dispatched after the state update so the render observing the new
+      // revision already holds the freshly parsed hash.
+      setExternalRevision(revision => revision + 1);
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -83,5 +93,5 @@ export function useHashState(): [HashState, (patch: Record<string, string | unde
     }
   }, []);
 
-  return [state, patch];
+  return [state, patch, externalRevision];
 }

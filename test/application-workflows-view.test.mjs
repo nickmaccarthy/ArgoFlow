@@ -5,15 +5,27 @@ import {
   DEFAULT_RUN_FILTERS,
   RUN_AUTO_REFRESH_INTERVAL_MS,
   cursorForApplication,
+  decideSwitchedRunCursor,
+  decodeRunViewHash,
   filterWorkflowRunRows,
   formatRunAge,
   isActiveWorkflowRun,
+  resolveRunCursor,
+  RUN_CURSOR_HASH_KEY,
+  RUN_FROM_HASH_KEY,
+  RUN_LIFECYCLE_HASH_KEY,
+  RUN_QUERY_HASH_KEY,
+  RUN_NAMESPACE_HASH_KEY,
+  RUN_PHASE_HASH_KEY,
+  RUN_SOURCE_HASH_KEY,
+  RUN_TO_HASH_KEY,
   shouldAutoRefreshRunPage,
   workflowApplicationKey,
   workflowRunHref,
   workflowRunSourceText
 } from '../src/application-workflows-view.ts';
 import {pageWorkflowIdentities} from '../src/workflow-runs.ts';
+import {parseHashState, serializeHashState} from '../src/url-state.ts';
 
 test('selects a stable, bounded first page of Workflow tree identities', () => {
   const nodes = [
@@ -122,12 +134,172 @@ test('hash state re-reads every navigation instead of trusting written hashes', 
   assert.doesNotMatch(source, /writtenRef/);
 });
 
-test('run filters and cursors round-trip through namespaced hash state', async () => {
-  const {parseHashState} = await import('../src/url-state.ts');
+test('run filters and cursors round-trip through namespaced hash state', () => {
   const hash = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c2&argoflow:runs.phase=Running&argoflow:runs.query=pay';
   const state = parseHashState(hash);
   assert.equal(state['runs.source'], 'Archive');
   assert.equal(state['runs.cursor'], 'c2');
   assert.equal(state['runs.phase'], 'Running');
   assert.equal(state['runs.query'], 'pay');
+});
+
+test('decodeRunViewHash empty hash returns Live source and DEFAULT_RUN_FILTERS', () => {
+  const state = parseHashState('');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+  assert.equal(result.cursor, undefined);
+  assert.deepEqual(result.filters, DEFAULT_RUN_FILTERS);
+});
+
+test('decodeRunViewHash garbage phase returns empty string', () => {
+  const state = parseHashState('#argoflow:runs.phase=zzz');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.filters.phase, '');
+});
+
+test('decodeRunViewHash garbage lifecycle returns all', () => {
+  const state = parseHashState('#argoflow:runs.lifecycle=zzz');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.filters.lifecycle, 'all');
+});
+
+test('decodeRunViewHash source Live returns Live', () => {
+  const state = parseHashState('#argoflow:runs.source=Live');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+});
+
+test('decodeRunViewHash source Nonsense returns Live', () => {
+  const state = parseHashState('#argoflow:runs.source=Nonsense');
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Live');
+});
+
+test('decodeRunViewHash valid deep link restores all fields end-to-end', () => {
+  const serialized = serializeHashState('#', {
+    [RUN_SOURCE_HASH_KEY]: 'Archive',
+    [RUN_CURSOR_HASH_KEY]: 'c2',
+    [RUN_PHASE_HASH_KEY]: 'Running',
+    [RUN_QUERY_HASH_KEY]: 'pay',
+    [RUN_NAMESPACE_HASH_KEY]: 'payments',
+    [RUN_LIFECYCLE_HASH_KEY]: 'active',
+    [RUN_FROM_HASH_KEY]: '2026-08-01',
+    [RUN_TO_HASH_KEY]: '2026-08-20'
+  });
+  const state = parseHashState(serialized);
+  const result = decodeRunViewHash(state);
+  assert.equal(result.source, 'Archive');
+  assert.equal(result.cursor, 'c2');
+  assert.equal(result.filters.phase, 'Running');
+  assert.equal(result.filters.query, 'pay');
+  assert.equal(result.filters.namespace, 'payments');
+  assert.equal(result.filters.lifecycle, 'active');
+  assert.equal(result.filters.from, '2026-08-01');
+  assert.equal(result.filters.to, '2026-08-20');
+});
+
+test('decodeRunViewHash cursor passthrough', () => {
+  // present
+  const state1 = parseHashState('#argoflow:runs.cursor=c2');
+  assert.equal(decodeRunViewHash(state1).cursor, 'c2');
+
+  // absent
+  const state2 = parseHashState('#argoflow:runs.source=Live');
+  assert.equal(decodeRunViewHash(state2).cursor, undefined);
+});
+
+test('decodeRunViewHash back/forward semantics', () => {
+  // Hash A: Archive with cursor and phase
+  const hashA = '#argoflow:runs.source=Archive&argoflow:runs.cursor=c1&argoflow:runs.phase=Running&argoflow:runs.query=pay';
+  const stateA = parseHashState(hashA);
+  const resultA = decodeRunViewHash(stateA);
+  assert.equal(resultA.source, 'Archive');
+  assert.equal(resultA.cursor, 'c1');
+  assert.equal(resultA.filters.phase, 'Running');
+  assert.equal(resultA.filters.query, 'pay');
+
+  // Hash B: Live with no cursor/filters
+  const hashB = '#argoflow:runs.source=Live';
+  const stateB = parseHashState(hashB);
+  const resultB = decodeRunViewHash(stateB);
+  assert.equal(resultB.source, 'Live');
+  assert.equal(resultB.cursor, undefined);
+  assert.deepEqual(resultB.filters, DEFAULT_RUN_FILTERS);
+});
+
+test('resolveRunCursor adopts a token whose recorded owner is this Application', () => {
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'B-page2', owner: 'app-b'}, false, undefined, undefined),
+    {cursor: 'B-page2', recordOwner: false, clearsStale: false}
+  );
+});
+
+test('resolveRunCursor keeps the current page when the hash token belongs to another Application', () => {
+  // The foreign token is not adopted, and because refusing it must not reset
+  // the page this Application already holds, the current cursor is kept.
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'A-page2', owner: 'app-a'}, false, undefined, 'A-page2'),
+    {cursor: 'A-page2', recordOwner: false, clearsStale: false}
+  );
+});
+
+test('resolveRunCursor adopts and labels an owner-less token arriving with the Application change', () => {
+  // The incoming Application's deep link has no owner yet, so it is adopted and
+  // labelled with this Application's key.
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'B-page2', owner: undefined}, true, 'A-page2', undefined),
+    {cursor: 'B-page2', recordOwner: true, clearsStale: false}
+  );
+});
+
+test('resolveRunCursor refuses an owner-less token while the same Application stays rendered', () => {
+  // In-session an owner-less token cannot be told apart from one meant for an
+  // Application not yet rendered, so it is not adopted and the held page is not reset.
+  assert.deepEqual(
+    resolveRunCursor('app-a', {cursor: 'B-page2', owner: undefined}, false, undefined, 'A-page2'),
+    {cursor: 'A-page2', recordOwner: false, clearsStale: false}
+  );
+});
+
+test('resolveRunCursor never adopts the outgoing Application token', () => {
+  assert.deepEqual(
+    resolveRunCursor('app-b', {cursor: 'A-page2', owner: undefined}, true, 'A-page2', undefined),
+    {recordOwner: false, clearsStale: true}
+  );
+});
+
+test('resolveRunCursor leaves an absent cursor unadopted', () => {
+  assert.deepEqual(resolveRunCursor('app-b', {}, false, undefined, 'A-page2'), {recordOwner: false, clearsStale: false});
+});
+
+test('decideSwitchedRunCursor clears the outgoing Application token from the URL', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'A-page2', owner: 'app-a'}, 'A-page2'),
+    {clearsHash: true, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor keeps and labels an owner-less incoming deep link', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'B-page2', owner: undefined}, 'A-page2'),
+    {clearsHash: false, recordOwner: true}
+  );
+});
+
+test('decideSwitchedRunCursor keeps a token the incoming Application already owns', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-b', {cursor: 'B-page2', owner: 'app-b'}, 'A-page2'),
+    {clearsHash: false, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor clears a token owned by a third Application', () => {
+  assert.deepEqual(
+    decideSwitchedRunCursor('app-c', {cursor: 'A-page2', owner: 'app-a'}, undefined),
+    {clearsHash: true, recordOwner: false}
+  );
+});
+
+test('decideSwitchedRunCursor leaves an absent URL cursor uncleared', () => {
+  assert.deepEqual(decideSwitchedRunCursor('app-b', {}, undefined), {clearsHash: false, recordOwner: false});
 });

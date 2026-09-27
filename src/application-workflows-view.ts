@@ -11,8 +11,8 @@ import {
 } from './workflow-runs.ts';
 import {WORKFLOW_PHASES, workflowPhaseColor, type WorkflowPhase} from './workflow-resource.ts';
 import {emitExtensionTelemetry, telemetryNow} from './telemetry.ts';
-import {useHashState} from './url-state.ts';
-
+import {parseHashState, useHashState} from './url-state.ts';
+import type {HashState} from './url-state.ts';
 export interface RunFilters {
   phase: '' | WorkflowPhase;
   query: string;
@@ -27,6 +27,45 @@ export const DEFAULT_RUN_FILTERS: RunFilters = {
 };
 
 export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
+export const RUN_SOURCE_HASH_KEY = 'runs.source';
+export const RUN_CURSOR_HASH_KEY = 'runs.cursor';
+/** Records which Application a cursor belongs to; a page token is meaningless to another. */
+export const RUN_CURSOR_OWNER_HASH_KEY = 'runs.cursor.owner';
+export const RUN_PHASE_HASH_KEY = 'runs.phase';
+export const RUN_QUERY_HASH_KEY = 'runs.query';
+export const RUN_NAMESPACE_HASH_KEY = 'runs.namespace';
+export const RUN_LIFECYCLE_HASH_KEY = 'runs.lifecycle';
+export const RUN_FROM_HASH_KEY = 'runs.from';
+export const RUN_TO_HASH_KEY = 'runs.to';
+
+export interface RunViewHashState {
+  source: RunSource;
+  cursor?: string;
+  cursorOwner?: string;
+  filters: RunFilters;
+}
+
+/**
+ * Decodes the hash state relevant to the Run view, using the same validation
+ * logic as the mount initializers. This is the single source of truth for both
+ * the mount path and the reconciliation path (reconciliation validates through
+ * the same codecs used on mount).
+ */
+export function decodeRunViewHash(hashState: HashState): RunViewHashState {
+  return {
+    source: hashState[RUN_SOURCE_HASH_KEY] === 'Archive' ? 'Archive' : 'Live',
+    cursor: hashState[RUN_CURSOR_HASH_KEY],
+    cursorOwner: hashState[RUN_CURSOR_OWNER_HASH_KEY],
+    filters: {
+      phase: (WORKFLOW_PHASES as readonly string[]).includes(hashState[RUN_PHASE_HASH_KEY] ?? '') ? hashState[RUN_PHASE_HASH_KEY] as WorkflowPhase : '',
+      lifecycle: ['active', 'completed'].includes(hashState[RUN_LIFECYCLE_HASH_KEY] ?? '') ? hashState[RUN_LIFECYCLE_HASH_KEY] as RunFilters['lifecycle'] : 'all',
+      query: hashState[RUN_QUERY_HASH_KEY] ?? '',
+      namespace: hashState[RUN_NAMESPACE_HASH_KEY] ?? '',
+      from: hashState[RUN_FROM_HASH_KEY] ?? '',
+      to: hashState[RUN_TO_HASH_KEY] ?? ''
+    }
+  };
+}
 
 /**
  * True when polling should tick: tab visible, no error on the current page,
@@ -34,6 +73,7 @@ export const RUN_AUTO_REFRESH_INTERVAL_MS = 15000;
  * Errored, permission-limited, and unavailable pages generate zero traffic
  * (issue #4); a retained prior page must not keep polling after a failure.
  */
+
 export function shouldAutoRefreshRunPage(rows: readonly WorkflowRunRow[], hidden?: boolean, error?: string, state?: RunPage['state']): boolean {
   if (hidden === true || error) return false;
   if (state === 'permission' || state === 'error' || state === 'unavailable') return false;
@@ -46,6 +86,60 @@ export function workflowApplicationKey(application?: ApplicationViewExtensionPro
 
 export function cursorForApplication(state: {applicationKey: string; cursor?: string}, applicationKey: string): string | undefined {
   return state.applicationKey === applicationKey ? state.cursor : undefined;
+}
+
+/** The cursor and its recorded owner in the live URL; the hook's state only refreshes on hashchange. */
+export function liveRunCursor(): {cursor?: string; owner?: string} {
+  if (typeof window === 'undefined') return {};
+  const live = parseHashState(window.location.hash);
+  return {cursor: live[RUN_CURSOR_HASH_KEY], owner: live[RUN_CURSOR_OWNER_HASH_KEY]};
+}
+
+/**
+ * Resolves the cursor an Application should use after the hash moved.
+ *
+ * A page token only means anything to the Application that produced it, and the hash
+ * records that ownership under `RUN_CURSOR_OWNER_HASH_KEY`. A token carrying this
+ * Application's key is adopted; one carrying another Application's key, or an owner-less
+ * one that arrives while this Application is not changing, is left alone and the page
+ * this Application already holds is kept — in-session an owner-less token cannot be told
+ * apart from one meant for an Application that has not been rendered yet, and guessing
+ * would let this Application request another one's page (issue #17 covers host-driven
+ * navigation updating the cursor while the view stays mounted). An owner-less token that
+ * arrives with the Application change is the incoming Application's deep link, so it is
+ * adopted and labelled. An absent cursor is the URL saying "no cursor".
+ */
+export function resolveRunCursor(
+  applicationKey: string,
+  hash: {cursor?: string; owner?: string},
+  applicationChanged: boolean,
+  staleCursor: string | undefined,
+  currentCursor: string | undefined
+): {cursor?: string; recordOwner: boolean; clearsStale: boolean} {
+  if (hash.cursor === undefined) return {recordOwner: false, clearsStale: false};
+  if (hash.cursor === staleCursor) return {recordOwner: false, clearsStale: true};
+  if (hash.owner === applicationKey) return {cursor: hash.cursor, recordOwner: false, clearsStale: false};
+  if (hash.owner === undefined && applicationChanged) return {cursor: hash.cursor, recordOwner: true, clearsStale: false};
+  return {cursor: currentCursor, recordOwner: false, clearsStale: false};
+}
+
+/**
+ * Decides what an Application switch does to the cursor in the URL.
+ *
+ * The outgoing Application's token must not survive, or it would page the incoming
+ * Application with a foreign token. A token the incoming Application already owns, or an
+ * owner-less one it is being handed by the same navigation, is kept — the latter is
+ * labelled with the incoming Application's key so later navigations are unambiguous.
+ */
+export function decideSwitchedRunCursor(
+  applicationKey: string,
+  live: {cursor?: string; owner?: string},
+  outgoingCursor: string | undefined
+): {clearsHash: boolean; recordOwner: boolean} {
+  if (live.cursor === undefined) return {clearsHash: false, recordOwner: false};
+  if (live.cursor === outgoingCursor) return {clearsHash: true, recordOwner: false};
+  if (live.owner === undefined) return {clearsHash: false, recordOwner: true};
+  return {clearsHash: live.owner !== applicationKey, recordOwner: false};
 }
 
 export interface ApplicationWorkflowsViewProps extends ApplicationViewExtensionProps {
@@ -376,13 +470,20 @@ function RunStats({rows}: {rows: WorkflowRunRow[]}) {
 }
 
 export function ApplicationWorkflowsView({application, tree, archive, baseUrl, fetcher}: ApplicationWorkflowsViewProps) {
-  const [hashState, patchHash] = useHashState();
+  const [hashState, patchHash, externalRevision] = useHashState();
   const applicationKey = workflowApplicationKey(application);
-  const [source, setSource] = React.useState<RunSource>(() => hashState['runs.source'] === 'Archive' ? 'Archive' : 'Live');
-  const [cursorState, setCursorState] = React.useState<{applicationKey: string; cursor?: string}>(() => ({
-    applicationKey,
-    cursor: hashState['runs.cursor']
-  }));
+  const [source, setSource] = React.useState<RunSource>(() => decodeRunViewHash(hashState).source);
+  const [cursorState, setCursorState] = React.useState<{applicationKey: string; cursor?: string}>(() => {
+    const initial = decodeRunViewHash(hashState);
+    // A deep link is attributed to the Application being opened, but one that names a
+    // different Application as its owner is not this view's to use.
+    const owned = initial.cursorOwner === undefined || initial.cursorOwner === applicationKey;
+    return {applicationKey, cursor: owned ? initial.cursor : undefined};
+  });
+  const applicationChanged = cursorState.applicationKey !== applicationKey;
+  // The outgoing Application's cursor token, remembered so it can never be adopted by
+  // the Application that replaces it in this mounted view.
+  const staleCursorRef = React.useRef<string | undefined>(undefined);
   const cursor = cursorForApplication(cursorState, applicationKey);
   const setCursor = (next?: string) => setCursorState({applicationKey, cursor: next});
   const [page, setPage] = React.useState<RunPage>();
@@ -390,19 +491,30 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
   const [error, setError] = React.useState<string>();
   const [refreshToken, setRefreshToken] = React.useState(0);
   const [hidden, setHidden] = React.useState(false);
-  const [filters, setFilters] = React.useState<RunFilters>(() => {
-    const phase = (WORKFLOW_PHASES as readonly string[]).includes(hashState['runs.phase'] ?? '') ? hashState['runs.phase'] as WorkflowPhase : '';
-    const lifecycle = ['active', 'completed'].includes(hashState['runs.lifecycle'] ?? '') ? hashState['runs.lifecycle'] as RunFilters['lifecycle'] : 'all';
-    return {
-      phase,
-      query: hashState['runs.query'] ?? '',
-      namespace: hashState['runs.namespace'] ?? '',
-      lifecycle,
-      from: hashState['runs.from'] ?? '',
-      to: hashState['runs.to'] ?? ''
-    };
-  });
+  const [filters, setFilters] = React.useState<RunFilters>(() => decodeRunViewHash(hashState).filters);
   const applicationName = application?.metadata?.name || 'Selected Application';
+
+  // A cursor belongs to the Application that produced it, so a switch resolves the URL
+  // from the LIVE URL: the outgoing Application's token is dropped, a token the incoming
+  // Application already owns is kept, and an owner-less one is labelled as the incoming
+  // Application's rather than discarded. The live URL is the source of truth here — the
+  // hook's state only refreshes on hashchange, so mid-navigation it still holds the
+  // outgoing Application's snapshot. `cursorState.cursor` is read but deliberately not a
+  // dependency: re-running once the state settles would erase the token being compared.
+  React.useEffect(() => {
+    if (!applicationChanged) return;
+    staleCursorRef.current = cursorState.cursor;
+    setCursorState({applicationKey});
+    // The live URL, not the hook's state, decides the cursor's fate: the state only
+    // refreshes on hashchange, so during a coordinated navigation it still holds the
+    // outgoing Application's snapshot.
+    const decision = decideSwitchedRunCursor(applicationKey, liveRunCursor(), staleCursorRef.current);
+    if (decision.clearsHash) {
+      patchHash({[RUN_CURSOR_HASH_KEY]: undefined, [RUN_CURSOR_OWNER_HASH_KEY]: undefined});
+    } else if (decision.recordOwner) {
+      patchHash({[RUN_CURSOR_OWNER_HASH_KEY]: applicationKey});
+    }
+  }, [applicationChanged, applicationKey, patchHash]);
 
   // Polling pauses while the tab is hidden; returning to the tab triggers an immediate refresh.
   React.useEffect(() => {
@@ -484,27 +596,51 @@ export function ApplicationWorkflowsView({application, tree, archive, baseUrl, f
     };
   }, [application, applicationKey, archive, baseUrl, cursor, fetcher, refreshToken, requestKey, source, tree]);
 
+  // External hash navigation (back/forward, manual edits, host-driven) is
+  // authoritative: re-derive the deep-linkable inputs through the same decoder
+  // used on mount. Keyed on externalRevision alone — own patches write through
+  // replaceState, which never fires hashchange, so the view cannot fight its own
+  // writes. The initial pass is skipped so mount defaults survive. The request
+  // effect reloads on its own because source/cursor/requestKey change here.
+  React.useEffect(() => {
+    if (externalRevision === 0) return;
+    const next = decodeRunViewHash(hashState);
+    const resolved = resolveRunCursor(applicationKey, {cursor: next.cursor, owner: next.cursorOwner}, applicationChanged, staleCursorRef.current, cursor);
+    // Label a newly adopted owner-less token so later navigations can attribute it.
+    if (resolved.recordOwner) patchHash({[RUN_CURSOR_OWNER_HASH_KEY]: applicationKey});
+    // A token equal to the outgoing Application's is known-foreign — a host or history
+    // navigation can reintroduce it — so drop it from the URL while the live URL still
+    // carries it, which leaves a newly written token for the incoming Application alone.
+    if (resolved.clearsStale && liveRunCursor().cursor === staleCursorRef.current) {
+      patchHash({[RUN_CURSOR_HASH_KEY]: undefined, [RUN_CURSOR_OWNER_HASH_KEY]: undefined});
+    }
+    setSource(next.source);
+    setCursorState({applicationKey, cursor: resolved.cursor});
+    setFilters(next.filters);
+  }, [externalRevision, applicationChanged, applicationKey]);
+
   const rows = React.useMemo(() => filterWorkflowRunRows(page?.rows || [], filters), [filters, page]);
   const updateFilters = (next: RunFilters) => {
     setFilters(next);
     patchHash({
-      'runs.phase': next.phase || undefined,
-      'runs.query': next.query || undefined,
-      'runs.namespace': next.namespace || undefined,
-      'runs.lifecycle': next.lifecycle === 'all' ? undefined : next.lifecycle,
-      'runs.from': next.from || undefined,
-      'runs.to': next.to || undefined
+      [RUN_PHASE_HASH_KEY]: next.phase || undefined,
+      [RUN_QUERY_HASH_KEY]: next.query || undefined,
+      [RUN_NAMESPACE_HASH_KEY]: next.namespace || undefined,
+      [RUN_LIFECYCLE_HASH_KEY]: next.lifecycle === 'all' ? undefined : next.lifecycle,
+      [RUN_FROM_HASH_KEY]: next.from || undefined,
+      [RUN_TO_HASH_KEY]: next.to || undefined
     });
   };
   const changeSource = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const next = event.currentTarget.value as RunSource;
     setSource(next);
     setCursor(undefined);
-    patchHash({'runs.source': next === 'Archive' ? next : undefined, 'runs.cursor': undefined});
+    patchHash({[RUN_SOURCE_HASH_KEY]: next === 'Archive' ? next : undefined, [RUN_CURSOR_HASH_KEY]: undefined, [RUN_CURSOR_OWNER_HASH_KEY]: undefined});
   };
   const changeCursor = (next?: string) => {
     setCursor(next);
-    patchHash({'runs.cursor': next});
+    // Record the owner with the token so a later navigation can attribute it.
+    patchHash({[RUN_CURSOR_HASH_KEY]: next, [RUN_CURSOR_OWNER_HASH_KEY]: next === undefined ? undefined : applicationKey});
   };
   const unavailableApplication = !application?.metadata?.name;
 

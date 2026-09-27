@@ -2,58 +2,47 @@ import React from 'react';
 
 import {WORKFLOW_PHASES, type WorkflowManifest, type WorkflowPhase} from './workflow-resource';
 import {WorkflowDagView} from './workflow-dag-view';
-import {decodeNodePhases, encodeNodePhases, filterWorkflowNodes, NODE_PHASES_HASH_KEY, normalizeWorkflowNodes, orderWorkflowNodesForDisplay} from './workflow-nodes';
+import {encodeNodePhases, filterWorkflowNodes, NODE_PHASES_HASH_KEY, normalizeWorkflowNodes, orderWorkflowNodesForDisplay} from './workflow-nodes';
 import type {WorkflowNode} from './workflow-nodes';
 import {WorkflowNodeDetails, WorkflowNodeFilters, WorkflowNodeGrid, WorkflowNodeList} from './workflow-nodes-view';
 import {emitExtensionTelemetry} from './telemetry';
 import {useHashState} from './url-state';
+import {
+  decodeWorkspaceHash,
+  defaultSelectedNodeId,
+  WORKSPACE_NODE_HASH_KEY,
+  WORKSPACE_QUERY_HASH_KEY,
+  WORKSPACE_VIEW_HASH_KEY,
+  type WorkspaceViewMode
+} from './workflow-view-state';
 
 export const DAG_NODE_LIMIT = 250;
 
-export type WorkspaceViewMode = 'dag' | 'list' | 'grid';
-
-/** Coerces a deep-linked view id; DAG stays unavailable above the node budget. */
-export function coerceWorkspaceView(value: string | undefined, largeWorkflow: boolean): WorkspaceViewMode {
-  if (largeWorkflow) return value === 'grid' ? 'grid' : 'list';
-  return value === 'list' || value === 'grid' ? value : 'dag';
-}
-
 export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManifest; podHref?: (node: WorkflowNode) => string | undefined}) {
-  const [hashState, patchHash] = useHashState();
+  const [hashState, patchHash, externalRevision] = useHashState();
   const nodes = React.useMemo(() => orderWorkflowNodesForDisplay(normalizeWorkflowNodes(workflow)), [workflow]);
   const largeWorkflow = nodes.length > DAG_NODE_LIMIT;
   const defaultView: WorkspaceViewMode = largeWorkflow ? 'list' : 'dag';
-  const [view, setView] = React.useState<WorkspaceViewMode>(() => coerceWorkspaceView(hashState['run.view'], largeWorkflow));
-  const [query, setQueryRaw] = React.useState<string>(() => hashState['run.q'] ?? '');
-  const [phases, setPhasesState] = React.useState<WorkflowPhase[]>(() => decodeNodePhases(hashState[NODE_PHASES_HASH_KEY]));
-  const [selectedId, setSelectedId] = React.useState<string | undefined>(() => {
-    const linked = hashState['run.node'];
-    if (linked && nodes.some(node => node.id === linked)) return linked;
-    return nodes.find(node => node.phase === 'Running' && node.type !== 'DAG')?.id;
-  });
+  const [view, setView] = React.useState<WorkspaceViewMode>(() => decodeWorkspaceHash(hashState, {largeWorkflow, nodes}).view);
+  const [query, setQueryRaw] = React.useState<string>(() => decodeWorkspaceHash(hashState, {largeWorkflow, nodes}).query);
+  const [phases, setPhasesState] = React.useState<WorkflowPhase[]>(() => decodeWorkspaceHash(hashState, {largeWorkflow, nodes}).phases);
+  const [selectedId, setSelectedId] = React.useState<string | undefined>(() => decodeWorkspaceHash(hashState, {largeWorkflow, nodes}).selectedId ?? defaultSelectedNodeId(nodes));
   const filtered = React.useMemo(() => filterWorkflowNodes(nodes, query, phases), [nodes, query, phases]);
   const selected = nodes.find(node => node.id === selectedId);
 
   const changeView = (next: WorkspaceViewMode) => {
     setView(next);
     // The default view stays out of the hash so clean URLs stay clean.
-    patchHash({'run.view': next === defaultView ? undefined : next});
+    patchHash({[WORKSPACE_VIEW_HASH_KEY]: next === defaultView ? undefined : next});
   };
-
-  // A workflow that grew past the DAG budget forces list view; keep the hash
-  // truthful. The state initializer already coerces a deep-linked 'dag', so
-  // the stale key must be detected through the hash itself, not just the state.
-  React.useEffect(() => {
-    if (largeWorkflow && (view === 'dag' || hashState['run.view'] === 'dag')) changeView('list');
-  }, [largeWorkflow, view, hashState]);
 
   const selectNode = (id?: string) => {
     setSelectedId(id);
-    patchHash({'run.node': id});
+    patchHash({[WORKSPACE_NODE_HASH_KEY]: id});
   };
   const setQuery = (value: string) => {
     setQueryRaw(value);
-    patchHash({'run.q': value || undefined});
+    patchHash({[WORKSPACE_QUERY_HASH_KEY]: value || undefined});
   };
   // Both filter surfaces route through this wrapper so an active phase
   // selection survives a copied URL / hard reload (issue #6).
@@ -61,6 +50,27 @@ export function WorkflowWorkspace({workflow, podHref}: {workflow: WorkflowManife
     setPhasesState(next);
     patchHash({[NODE_PHASES_HASH_KEY]: encodeNodePhases(next)});
   };
+
+  // A workflow that grew past the DAG budget forces list view; keep the hash
+  // truthful. The state initializer already coerces a deep-linked 'dag', so
+  // the stale key must be detected through the hash itself, not just the state.
+  React.useEffect(() => {
+    if (largeWorkflow && (view === 'dag' || hashState[WORKSPACE_VIEW_HASH_KEY] === 'dag')) changeView('list');
+  }, [largeWorkflow, view, hashState]);
+
+  // External hash navigation (back/forward, manual edits, host-driven) is
+  // authoritative: re-derive local state through the same codecs used on mount.
+  // Keyed on externalRevision alone — own patches write through replaceState,
+  // which never fires hashchange, so the view cannot fight its own writes. The
+  // initial pass is skipped so the mount-time selection default survives.
+  React.useEffect(() => {
+    if (externalRevision === 0) return;
+    const next = decodeWorkspaceHash(hashState, {largeWorkflow, nodes});
+    setView(next.view);
+    setQueryRaw(next.query);
+    setPhasesState(next.phases);
+    setSelectedId(next.selectedId);
+  }, [externalRevision]);
 
   React.useEffect(() => emitExtensionTelemetry('workflow.ready', {
     feature: `workflow-${view}`,
