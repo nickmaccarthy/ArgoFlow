@@ -150,12 +150,20 @@ jobs:
 
       - name: Collect bounded Redis lifecycle timeline
         if: always()
+        timeout-minutes: 1
         run: |
           if [ -f "$RUNNER_TEMP/redis-lifecycle.pid" ]; then
             pid="$(< "$RUNNER_TEMP/redis-lifecycle.pid")"
             if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-              kill -USR1 "$pid" 2>/dev/null || true
-              sleep 5
+              # SIGUSR1 belongs exclusively to an actual smoke failure.
+              # Queue a separate final probe even when a periodic read is in flight.
+              kill -USR2 "$pid" 2>/dev/null || true
+              for attempt in {1..15}; do
+                if node -e "const fs=require('fs'); const p=process.env.RUNNER_TEMP+'/redis-lifecycle.jsonl'; if(!fs.existsSync(p)) process.exit(1); const fd=fs.openSync(p,'r'); try {const size=fs.fstatSync(fd).size; const b=Buffer.alloc(Math.min(size,120000)); fs.readSync(fd,b,0,b.length,size-b.length); process.exit(b.includes(Buffer.from('\"phase\":\"post_smoke\"')) ? 0 : 1)} finally {fs.closeSync(fd)}"; then
+                  break
+                fi
+                sleep 1
+              done
               kill "$pid" 2>/dev/null || true
             fi
           fi

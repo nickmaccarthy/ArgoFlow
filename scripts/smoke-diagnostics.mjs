@@ -193,25 +193,43 @@ export async function collectRedis(write = console.log, run = runKubectl, {phase
 
 export async function sampleRedis(write = console.log, run = runKubectl, {intervalMs = 15000, maxSamples = 120} = {}) {
   let pending = false;
-  let samples = 0;
+  let periodicSamples = 0;
   let stopped = false;
-  let failureQueued = false;
+  let finishing = false;
+  let failureRequested = false;
+  let finalRequested = false;
+  const queued = [];
   const sample = async phase => {
-    if (pending) { if (phase === 'failure') failureQueued = true; return; }
-    if (stopped || samples >= maxSamples + (phase === 'failure' ? 2 : 0)) return;
+    if (stopped || (phase === 'periodic' && (finishing || periodicSamples >= maxSamples - 1))) return;
+    if (phase === 'periodic') periodicSamples++;
+    if (pending) { if (phase !== 'periodic') queued.push(phase); return; }
     pending = true;
-    samples++;
     try { await collectRedis(write, run, {phase}); } catch { emit(write, phase, 'redis_unavailable'); }
     finally {
       pending = false;
-      if (failureQueued) { failureQueued = false; void sample('failure'); }
+      if (!stopped && queued.length) void sample(queued.shift());
     }
   };
-  const onFailure = () => { void sample('failure'); };
+  const onFailure = () => {
+    if (!failureRequested && !finishing) { failureRequested = true; void sample('failure'); }
+  };
+  const onFinal = () => {
+    if (finalRequested) return;
+    finalRequested = true;
+    finishing = true;
+    clearInterval(timer);
+    void sample('post_smoke');
+  };
   process.on('SIGUSR1', onFailure);
   await sample('baseline');
   const timer = setInterval(() => { void sample('periodic'); }, intervalMs);
-  return () => { stopped = true; clearInterval(timer); process.off('SIGUSR1', onFailure); };
+  process.on('SIGUSR2', onFinal);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    process.off('SIGUSR1', onFailure);
+    process.off('SIGUSR2', onFinal);
+  };
 }
 
 export async function collectKubernetes(write = console.log, run = runKubectl, signal) {

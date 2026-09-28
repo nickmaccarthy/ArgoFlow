@@ -330,8 +330,12 @@ Diagnostics never retry assertions or change the smoke exit code.
 The compatibility job also starts a read-only Redis sampler after fixture
 Application creation and before fixture convergence polling. Its first probe
 is the baseline (up to six seconds are allowed for it), followed by snapshots
-every 15 seconds during convergence and smoke, an asynchronous signal on smoke
-failure, and a final post-smoke probe. The sampler stops after 120 probes;
+every 15 seconds during convergence and smoke, a failure-only signal from the
+smoke driver, and a distinct `post_smoke` probe after either green or red smoke.
+Final and failure probes queue behind an in-flight read; cleanup waits at most
+15 seconds for the final marker before stopping the sampler. The sampler stops
+periodic sampling after 120 baseline/periodic probes, reserving one failure and
+one final probe;
 each snapshot runs four parallel `kubectl get` reads with four-second command
 timeouts, 512 KiB per-command input caps and a 4.5-second overall deadline.
 The bounded timeline reports only Deployment desired/ready/available, endpoint
