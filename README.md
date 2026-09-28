@@ -327,6 +327,25 @@ logs are collected: their arbitrary message text cannot be safely attributed or 
 so the internal cache/controller/live-Kubernetes stage remains unknown.
 Diagnostics never retry assertions or change the smoke exit code.
 
+The compatibility job also starts a read-only Redis sampler after fixture
+Application creation and before fixture convergence polling. Its first probe
+is the baseline (up to six seconds are allowed for it), followed by snapshots
+every 15 seconds during convergence and smoke, an asynchronous signal on smoke
+failure, and a final post-smoke probe. The sampler stops after 120 probes;
+each snapshot runs four parallel `kubectl get` reads with four-second command
+timeouts, 512 KiB per-command input caps and a 4.5-second overall deadline.
+The bounded timeline reports only Deployment desired/ready/available, endpoint
+ready-address count, and at most four Redis pods with process-local ordinals,
+age buckets, node assignment, phase, and capped init/main readiness/restarts/
+allowlisted waiting and last-termination reasons. Up to eight pod events are
+ordered by timestamp and reduced to allowlisted type/reason, count and age
+bucket. No pod names/UIDs, event messages, raw Kubernetes output or logs are
+printed. The first snapshot cannot observe the interval from Argo CD install
+through fixture Application creation; a failed sampler or exhausted probe cap
+leaves additional gaps. Ordinals are comparable only within one job, and this
+timeline establishes correlation, not the server-side GetResource stage or
+Redis causality. Diagnostic failures never turn a red smoke green.
+
 Useful paths:
 
 ```text

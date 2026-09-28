@@ -13,7 +13,7 @@
  *   ARGOFLOW_SMOKE_STRICT   set to 1 to make the view-switch toggle assertion blocking
  */
 import assert from 'node:assert/strict';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync, readFileSync} from 'node:fs';
 import {startNetworkDiagnostics, startHeartbeat, viewSwitchCheck, fixtureRowCheck} from './smoke-diagnostics.mjs';
 import {startResourceFailureProbe} from './resource-api-probe.mjs';
 
@@ -299,6 +299,12 @@ try {
   }
 }
 } catch {
+  // Ask the independent sampler for an immediate snapshot; never await it or
+  // replace the strict smoke failure if sampling has already stopped.
+  try {
+    const pid = Number(readFileSync(process.env.ARGOFLOW_REDIS_SAMPLER_PID_FILE, 'utf8'));
+    if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 'SIGUSR1');
+  } catch { /* Diagnostic only. */ }
   console.error('[smoke] FAIL');
   process.exitCode = 1;
 }
