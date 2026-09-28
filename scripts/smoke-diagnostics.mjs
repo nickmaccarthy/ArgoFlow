@@ -23,6 +23,10 @@ export async function viewSwitchCheck(run, {strict, warn, screenshot}) {
   }
 }
 
+export async function fixtureRowCheck(wait, timeoutMs) {
+  await wait(timeoutMs);
+}
+
 export function route(url) {
   try {
     const parsed = new URL(url);
@@ -98,21 +102,141 @@ export function startHeartbeat(session, getPhase, write = console.log, {interval
 const components = [
   ['argocd', 'argocd-server'],
   ['argocd', 'argocd-application-controller'],
+  ['argocd', 'argocd-redis'],
   ['argocd', 'argocd-repo-server'],
   ['argo', 'workflow-controller']
 ];
 const safeState = value => ['Running', 'Pending', 'Failed', 'Succeeded', 'Unknown'].includes(value) ? value : 'other';
 const safeReason = value => ['BackOff', 'CrashLoopBackOff', 'OOMKilled', 'Error', 'Evicted', 'FailedScheduling', 'Unhealthy', 'Killing', 'FailedMount', 'FailedCreatePodSandBox', 'Pulled', 'Created', 'Started'].includes(value) ? value : 'other';
-const runKubectl = (namespace, kind) => new Promise(resolve => {
-  execFile('kubectl', ['-n', namespace, 'get', kind, '-o', 'json'], {timeout: 4000, maxBuffer: 512 * 1024}, (error, stdout) => {
+const runKubectl = (namespace, kind, signal) => new Promise(resolve => {
+  execFile('kubectl', ['-n', namespace, 'get', kind, '-o', 'json'], {timeout: 4000, maxBuffer: 512 * 1024, signal}, (error, stdout) => {
     if (error) return resolve(null);
     try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
   });
 });
 
-export async function collectKubernetes(write = console.log, run = runKubectl) {
+// Identity keys stay in memory for this sampler run; only ordinals leave it.
+const identities = new Map();
+const count = value => Number.isInteger(value) ? Math.min(999, Math.max(0, value)) : 0;
+const redisReason = value => ['ContainerCreating', 'PodInitializing', 'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError', 'CreateContainerError', 'RunContainerError', 'OOMKilled', 'Error', 'Completed', 'Evicted'].includes(value) ? value : 'other';
+const eventReason = value => ['FailedScheduling', 'Scheduled', 'Pulling', 'Pulled', 'Failed', 'BackOff', 'Created', 'Started', 'Killing', 'Unhealthy', 'FailedMount', 'FailedCreatePodSandBox', 'Evicted', 'Preempted', 'NodeNotReady'].includes(value) ? value : 'other';
+const age = (value, now) => {
+  const elapsed = now - Date.parse(value);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 'unknown';
+  if (elapsed < 60000) return 'under_1m';
+  if (elapsed < 300000) return '1_to_5m';
+  if (elapsed < 900000) return '5_to_15m';
+  return 'over_15m';
+};
+const container = status => ({
+  ready: status?.ready === true, restarts: count(status?.restartCount),
+  waiting: redisReason(status?.state?.waiting?.reason),
+  lastTermination: redisReason(status?.lastState?.terminated?.reason)
+});
+
+export function sanitizeRedisSnapshot({pods, deployments, endpoints, events}, now = Date.now(), keys = identities) {
+  const selected = (Array.isArray(pods?.items) ? pods.items : [])
+    .filter(pod => pod?.metadata?.namespace === 'argocd' && /^argocd-redis-[a-zA-Z0-9-]+$/.test(pod.metadata.name || ''))
+    .sort((a, b) => String(a.metadata.name).localeCompare(String(b.metadata.name))).slice(0, 4)
+    .map(pod => {
+      const key = pod.metadata.uid || pod.metadata.name;
+      if (!keys.has(key) && keys.size < 12) keys.set(key, keys.size + 1);
+      return {pod, ordinal: keys.get(key) || 0};
+    });
+  const deployment = (Array.isArray(deployments?.items) ? deployments.items : []).find(item => item?.metadata?.name === 'argocd-redis');
+  const endpoint = (Array.isArray(endpoints?.items) ? endpoints.items : []).find(item => item?.metadata?.name === 'argocd-redis');
+  const relevant = (Array.isArray(events?.items) ? events.items : [])
+    .filter(item => selected.some(({pod}) => item?.involvedObject?.uid
+      ? item.involvedObject.uid === pod.metadata.uid : item?.involvedObject?.name === pod.metadata.name))
+    .map(item => ({item, time: Date.parse(item.eventTime || item.lastTimestamp || item.metadata?.creationTimestamp)}))
+    .filter(({time}) => Number.isFinite(time) && time <= now)
+    .sort((a, b) => a.time - b.time).slice(-8);
+  const endpointReady = (Array.isArray(endpoint?.subsets) ? endpoint.subsets : [])
+    .reduce((total, subset) => total + (Array.isArray(subset.addresses) ? subset.addresses.length : 0), 0);
+  return {
+    deployment: {desired: count(deployment?.spec?.replicas), ready: count(deployment?.status?.readyReplicas), available: count(deployment?.status?.availableReplicas)},
+    endpointReady: Math.min(999, endpointReady),
+    pods: selected.map(({pod, ordinal}) => ({
+      ordinal, age: age(pod.metadata.creationTimestamp, now), assigned: Boolean(pod.spec?.nodeName),
+      phase: safeState(pod.status?.phase),
+      init: (Array.isArray(pod.status?.initContainerStatuses) ? pod.status.initContainerStatuses : []).slice(0, 2).map(container),
+      main: (Array.isArray(pod.status?.containerStatuses) ? pod.status.containerStatuses : []).slice(0, 2).map(container)
+    })),
+    events: relevant.map(({item, time}) => ({
+      ordinal: selected.find(({pod}) => item.involvedObject?.uid
+        ? item.involvedObject.uid === pod.metadata.uid : item.involvedObject?.name === pod.metadata.name)?.ordinal || 0,
+      reason: eventReason(item.reason), type: ['Normal', 'Warning'].includes(item.type) ? item.type : 'other',
+      count: count(item.count), age: age(new Date(time).toISOString(), now)
+    }))
+  };
+}
+
+export async function collectRedis(write = console.log, run = runKubectl, {phase = 'periodic', timeoutMs = 4500, keys = identities} = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const results = await Promise.race([
+      Promise.all(['pods', 'deployments', 'endpoints', 'events'].map(kind =>
+        Promise.resolve().then(() => run('argocd', kind, controller.signal)).catch(() => null))),
+      new Promise(resolve => controller.signal.addEventListener('abort', () => resolve(null), {once: true}))
+    ]);
+    if (results === null || results.some(result => !Array.isArray(result?.items))) emit(write, phase, 'redis_unavailable');
+    else {
+      const [pods, deployments, endpoints, events] = results;
+      emit(write, phase, 'redis_snapshot', sanitizeRedisSnapshot({pods, deployments, endpoints, events}, Date.now(), keys));
+    }
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+export async function sampleRedis(write = console.log, run = runKubectl, {intervalMs = 15000, maxSamples = 120} = {}) {
+  let pending = false;
+  let periodicSamples = 0;
+  let stopped = false;
+  let finishing = false;
+  let failureRequested = false;
+  let finalRequested = false;
+  const queued = [];
+  const sample = async phase => {
+    if (stopped || (phase === 'periodic' && (finishing || periodicSamples >= maxSamples - 1))) return;
+    if (phase === 'periodic') periodicSamples++;
+    if (pending) { if (phase !== 'periodic') queued.push(phase); return; }
+    pending = true;
+    try { await collectRedis(write, run, {phase}); } catch { emit(write, phase, 'redis_unavailable'); }
+    finally {
+      pending = false;
+      if (!stopped && queued.length) void sample(queued.shift());
+    }
+  };
+  const onFailure = () => {
+    if (!failureRequested && !finishing) { failureRequested = true; void sample('failure'); }
+  };
+  const onFinal = () => {
+    if (finalRequested) return;
+    finalRequested = true;
+    finishing = true;
+    clearInterval(timer);
+    void sample('post_smoke');
+  };
+  process.on('SIGUSR1', onFailure);
+  await sample('baseline');
+  const timer = setInterval(() => { void sample('periodic'); }, intervalMs);
+  process.on('SIGUSR2', onFinal);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    process.off('SIGUSR1', onFailure);
+    process.off('SIGUSR2', onFinal);
+  };
+}
+
+export async function collectKubernetes(write = console.log, run = runKubectl, signal) {
   for (const [namespace, component] of components) {
-    const pods = await run(namespace, 'pods');
+    if (signal?.aborted) return;
+    const pods = await run(namespace, 'pods', signal);
+    if (signal?.aborted) return;
     if (!Array.isArray(pods?.items)) {
       emit(write, 'failure', 'kubernetes_unavailable', {component});
       continue;
@@ -128,7 +252,8 @@ export async function collectKubernetes(write = console.log, run = runKubectl) {
         }))
       });
     }
-    const events = await run(namespace, 'events');
+    const events = await run(namespace, 'events', signal);
+    if (signal?.aborted) return;
     if (!Array.isArray(events?.items)) continue;
     for (const event of events.items.filter(item => matches.some(pod => item.involvedObject?.name === pod.metadata?.name)).slice(-5)) {
       emit(write, 'failure', 'pod_event', {component, reason: safeReason(event.reason), type: event.type === 'Warning' ? 'Warning' : 'other'});
@@ -137,5 +262,7 @@ export async function collectKubernetes(write = console.log, run = runKubectl) {
 }
 
 if (process.argv[1]?.endsWith('/smoke-diagnostics.mjs')) {
-  await collectKubernetes();
+  if (process.argv.includes('--redis-sample')) await sampleRedis();
+  else if (process.argv.includes('--redis-once')) await collectRedis();
+  else await collectKubernetes();
 }

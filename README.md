@@ -308,6 +308,48 @@ forward after two consecutive failed probes or a process exit, and fails if
 recovery cannot be verified (up to three restarts). It never reruns smoke
 assertions; the forward log is uploaded as `artifacts-portforward.log`.
 
+On two 5xx responses for the known fixture Workflow resource during Workflows
+mount/row wait, `scripts/resource-api-probe.mjs` starts one best-effort round
+while the cluster is live. It compares that GET, `/healthz?full=true`, and the
+application resource-tree GET through the existing service forward and an
+ephemeral direct server-pod forward. It reuses only the browser's Argo CD
+session cookie in memory; if no cookie or ready server pod is available, the
+path is marked `unavailable`. Each endpoint has a four-second deadline (hard
+cap eight seconds). Only route templates, status, elapsed time, source and
+coarse status categories are emitted; 504/500 are *candidates* for gRPC
+DeadlineExceeded/Unknown, not proof of the responding hop. The failure-time
+pod snapshot emits three fixed-schema `pod_server`, `pod_redis`, and
+`pod_controller` events (route `/healthz` is a control label, not a pod HTTP
+request): `category` is ready/not_ready/unknown/unavailable and numeric `status`
+is the capped sum of container restarts (0–999), not an HTTP status. The
+existing post-smoke pod collector retains its historical format. No raw server
+logs are collected: their arbitrary message text cannot be safely attributed or sanitized here,
+so the internal cache/controller/live-Kubernetes stage remains unknown.
+Diagnostics never retry assertions or change the smoke exit code.
+
+The compatibility job also starts a read-only Redis sampler after fixture
+Application creation and before fixture convergence polling. Its first probe
+is the baseline (up to six seconds are allowed for it), followed by snapshots
+every 15 seconds during convergence and smoke, a failure-only signal from the
+smoke driver, and a distinct `post_smoke` probe after either green or red smoke.
+Final and failure probes queue behind an in-flight read; cleanup waits at most
+15 seconds for the final marker before stopping the sampler. The sampler stops
+periodic sampling after 120 baseline/periodic probes, reserving one failure and
+one final probe;
+each snapshot runs four parallel `kubectl get` reads with four-second command
+timeouts, 512 KiB per-command input caps and a 4.5-second overall deadline.
+The bounded timeline reports only Deployment desired/ready/available, endpoint
+ready-address count, and at most four Redis pods with process-local ordinals,
+age buckets, node assignment, phase, and capped init/main readiness/restarts/
+allowlisted waiting and last-termination reasons. Up to eight pod events are
+ordered by timestamp and reduced to allowlisted type/reason, count and age
+bucket. No pod names/UIDs, event messages, raw Kubernetes output or logs are
+printed. The first snapshot cannot observe the interval from Argo CD install
+through fixture Application creation; a failed sampler or exhausted probe cap
+leaves additional gaps. Ordinals are comparable only within one job, and this
+timeline establishes correlation, not the server-side GetResource stage or
+Redis causality. Diagnostic failures never turn a red smoke green.
+
 Useful paths:
 
 ```text

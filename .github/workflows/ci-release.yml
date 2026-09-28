@@ -90,6 +90,18 @@ jobs:
           kubectl create namespace argoflow-e2e --dry-run=client -o yaml | kubectl apply -f -
           sed -e "s/__REVISION__/${REVISION}/" -e "s|__REPO_URL__|${REPO_URL}|" test/e2e/argocd-application.yaml | kubectl apply -f -
 
+      # Start before fixture convergence: the sampler records a baseline and
+      # bounded periodic Redis-only snapshots without emitting kubectl output.
+      - name: Start Redis lifecycle sampling
+        run: |
+          node scripts/smoke-diagnostics.mjs --redis-sample > "$RUNNER_TEMP/redis-lifecycle.jsonl" 2>/dev/null &
+          echo "$!" > "$RUNNER_TEMP/redis-lifecycle.pid"
+          # Allow the first bounded baseline probe to finish before sync polling.
+          for attempt in 1 2 3 4 5 6; do
+            [ -s "$RUNNER_TEMP/redis-lifecycle.jsonl" ] && break
+            sleep 1
+          done
+
       # Convergence means: every fixture is Synced and the sample run reached Succeeded.
       # Aggregate application health stays Degraded by design here (suspended CronWorkflow),
       # so it is deliberately not part of the gate.
@@ -125,6 +137,7 @@ jobs:
           # original instability was the container-vs-icon click bug, fixed at
           # the root in the smoke driver.
           ARGOFLOW_SMOKE_STRICT: '1'
+          ARGOFLOW_REDIS_SAMPLER_PID_FILE: ${{ runner.temp }}/redis-lifecycle.pid
         # Registration/rendering/telemetry failures must turn this job red
         # (issue #11).
         run: |
@@ -134,6 +147,27 @@ jobs:
           # Probe HTTP throughout the run, not only before it. Restart only the
           # transport on sustained failure; do not rerun smoke assertions.
           node scripts/supervised-smoke.mjs node scripts/e2e-smoke.mjs
+
+      - name: Collect bounded Redis lifecycle timeline
+        if: always()
+        timeout-minutes: 1
+        run: |
+          if [ -f "$RUNNER_TEMP/redis-lifecycle.pid" ]; then
+            pid="$(< "$RUNNER_TEMP/redis-lifecycle.pid")"
+            if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+              # SIGUSR1 belongs exclusively to an actual smoke failure.
+              # Queue a separate final probe even when a periodic read is in flight.
+              kill -USR2 "$pid" 2>/dev/null || true
+              for attempt in {1..15}; do
+                if node -e "const fs=require('fs'); const p=process.env.RUNNER_TEMP+'/redis-lifecycle.jsonl'; if(!fs.existsSync(p)) process.exit(1); const fd=fs.openSync(p,'r'); try {const size=fs.fstatSync(fd).size; const b=Buffer.alloc(Math.min(size,120000)); fs.readSync(fd,b,0,b.length,size-b.length); process.exit(b.includes(Buffer.from('\"phase\":\"post_smoke\"')) ? 0 : 1)} finally {fs.closeSync(fd)}"; then
+                  break
+                fi
+                sleep 1
+              done
+              kill "$pid" 2>/dev/null || true
+            fi
+          fi
+          node -e "const fs=require('fs'); const p=process.env.RUNNER_TEMP+'/redis-lifecycle.jsonl'; if(fs.existsSync(p)) process.stdout.write(fs.readFileSync(p,'utf8').slice(0,600000))" || true
 
       # No raw pod logs or event messages: the collector emits only bounded,
       # allowlisted state/restart/reason fields. Its failure cannot mask smoke.
