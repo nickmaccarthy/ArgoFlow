@@ -23,6 +23,10 @@ export async function viewSwitchCheck(run, {strict, warn, screenshot}) {
   }
 }
 
+export async function fixtureRowCheck(wait, timeoutMs) {
+  await wait(timeoutMs);
+}
+
 export function route(url) {
   try {
     const parsed = new URL(url);
@@ -98,21 +102,24 @@ export function startHeartbeat(session, getPhase, write = console.log, {interval
 const components = [
   ['argocd', 'argocd-server'],
   ['argocd', 'argocd-application-controller'],
+  ['argocd', 'argocd-redis'],
   ['argocd', 'argocd-repo-server'],
   ['argo', 'workflow-controller']
 ];
 const safeState = value => ['Running', 'Pending', 'Failed', 'Succeeded', 'Unknown'].includes(value) ? value : 'other';
 const safeReason = value => ['BackOff', 'CrashLoopBackOff', 'OOMKilled', 'Error', 'Evicted', 'FailedScheduling', 'Unhealthy', 'Killing', 'FailedMount', 'FailedCreatePodSandBox', 'Pulled', 'Created', 'Started'].includes(value) ? value : 'other';
-const runKubectl = (namespace, kind) => new Promise(resolve => {
-  execFile('kubectl', ['-n', namespace, 'get', kind, '-o', 'json'], {timeout: 4000, maxBuffer: 512 * 1024}, (error, stdout) => {
+const runKubectl = (namespace, kind, signal) => new Promise(resolve => {
+  execFile('kubectl', ['-n', namespace, 'get', kind, '-o', 'json'], {timeout: 4000, maxBuffer: 512 * 1024, signal}, (error, stdout) => {
     if (error) return resolve(null);
     try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
   });
 });
 
-export async function collectKubernetes(write = console.log, run = runKubectl) {
+export async function collectKubernetes(write = console.log, run = runKubectl, signal) {
   for (const [namespace, component] of components) {
-    const pods = await run(namespace, 'pods');
+    if (signal?.aborted) return;
+    const pods = await run(namespace, 'pods', signal);
+    if (signal?.aborted) return;
     if (!Array.isArray(pods?.items)) {
       emit(write, 'failure', 'kubernetes_unavailable', {component});
       continue;
@@ -128,7 +135,8 @@ export async function collectKubernetes(write = console.log, run = runKubectl) {
         }))
       });
     }
-    const events = await run(namespace, 'events');
+    const events = await run(namespace, 'events', signal);
+    if (signal?.aborted) return;
     if (!Array.isArray(events?.items)) continue;
     for (const event of events.items.filter(item => matches.some(pod => item.involvedObject?.name === pod.metadata?.name)).slice(-5)) {
       emit(write, 'failure', 'pod_event', {component, reason: safeReason(event.reason), type: event.type === 'Warning' ? 'Warning' : 'other'});

@@ -308,6 +308,21 @@ forward after two consecutive failed probes or a process exit, and fails if
 recovery cannot be verified (up to three restarts). It never reruns smoke
 assertions; the forward log is uploaded as `artifacts-portforward.log`.
 
+On two 5xx responses for the known fixture Workflow resource during Workflows
+mount/row wait, `scripts/resource-api-probe.mjs` starts one best-effort round
+while the cluster is live. It compares that GET, `/healthz?full=true`, and the
+application resource-tree GET through the existing service forward and an
+ephemeral direct server-pod forward. It reuses only the browser's Argo CD
+session cookie in memory; if no cookie or ready server pod is available, the
+path is marked `unavailable`. Each endpoint has a four-second deadline (hard
+cap eight seconds). Only route templates, status, elapsed time, source and
+coarse status categories are emitted; 504/500 are *candidates* for gRPC
+DeadlineExceeded/Unknown, not proof of the responding hop. The bounded pod
+snapshot includes Redis readiness/restarts. No raw server logs are collected:
+their arbitrary message text cannot be safely attributed or sanitized here,
+so the internal cache/controller/live-Kubernetes stage remains unknown.
+Diagnostics never retry assertions or change the smoke exit code.
+
 Useful paths:
 
 ```text

@@ -70,8 +70,8 @@ test('collector caps pod/event output and redacts arbitrary fields', async () =>
     return {items: Array.from({length: 20}, () => ({involvedObject: {name: 'argocd-server-0'}, reason: 'token secret', message: 'password secret', type: 'Warning'}))};
   };
   await collectKubernetes(line => lines.push(line), run);
-  assert.equal(calls, 8);
-  assert(lines.length <= 17);
+  assert.equal(calls, 10);
+  assert(lines.length <= 18);
   assert(!/secret|password|argocd-server-0/.test(lines.join('')));
   assert(parsed(lines).some(event => event.event === 'pod' && event.containers[0].restarts === 999));
 });

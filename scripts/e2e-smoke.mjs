@@ -14,7 +14,8 @@
  */
 import assert from 'node:assert/strict';
 import {mkdirSync} from 'node:fs';
-import {startNetworkDiagnostics, startHeartbeat, viewSwitchCheck} from './smoke-diagnostics.mjs';
+import {startNetworkDiagnostics, startHeartbeat, viewSwitchCheck, fixtureRowCheck} from './smoke-diagnostics.mjs';
+import {startResourceFailureProbe} from './resource-api-probe.mjs';
 
 import puppeteer from 'puppeteer-core';
 
@@ -160,6 +161,7 @@ try {
   let phase = 'setup';
   const mark = name => { phase = name; console.log(`[smoke-diag] ${JSON.stringify({timestamp: new Date().toISOString(), phase, event: 'phase_start'})}`); };
   const stopNetwork = startNetworkDiagnostics(page, () => phase);
+  const stopResourceProbe = startResourceFailureProbe(page, () => phase);
   const heartbeatSession = await page.createCDPSession();
   const stopHeartbeat = startHeartbeat(heartbeatSession, () => phase);
   try {
@@ -213,7 +215,7 @@ try {
   // Wait for the synced fixture run to appear; auto-refresh converges without clicks.
   log('waiting for the fixture Workflow row (auto-refresh should converge)');
   mark('fixture_row_wait');
-  await textExists(page, '#workflow-extension', WORKFLOW_NAME, RUN_PAGE_TIMEOUT_MS);
+  await fixtureRowCheck(timeout => textExists(page, '#workflow-extension', WORKFLOW_NAME, timeout), RUN_PAGE_TIMEOUT_MS);
   await shot(page, '01-workflows-view');
   log('workflows view rendered with the fixture run');
 
@@ -281,6 +283,7 @@ try {
   console.log('[smoke] PASS');
   } finally {
     stopHeartbeat();
+    stopResourceProbe();
     stopNetwork();
     void heartbeatSession.detach().catch(() => {});
   }
