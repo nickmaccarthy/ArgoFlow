@@ -317,9 +317,13 @@ session cookie in memory; if no cookie or ready server pod is available, the
 path is marked `unavailable`. Each endpoint has a four-second deadline (hard
 cap eight seconds). Only route templates, status, elapsed time, source and
 coarse status categories are emitted; 504/500 are *candidates* for gRPC
-DeadlineExceeded/Unknown, not proof of the responding hop. The bounded pod
-snapshot includes Redis readiness/restarts. No raw server logs are collected:
-their arbitrary message text cannot be safely attributed or sanitized here,
+DeadlineExceeded/Unknown, not proof of the responding hop. The failure-time
+pod snapshot emits three fixed-schema `pod_server`, `pod_redis`, and
+`pod_controller` events (route `/healthz` is a control label, not a pod HTTP
+request): `category` is ready/not_ready/unknown/unavailable and numeric `status`
+is the capped sum of container restarts (0–999), not an HTTP status. The
+existing post-smoke pod collector retains its historical format. No raw server
+logs are collected: their arbitrary message text cannot be safely attributed or sanitized here,
 so the internal cache/controller/live-Kubernetes stage remains unknown.
 Diagnostics never retry assertions or change the smoke exit code.
 

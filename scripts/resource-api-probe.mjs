@@ -8,18 +8,21 @@ const ROUTE = '/api/v1/applications/:application/resource';
 const TREE = '/api/v1/applications/:application/resource-tree';
 const HEALTH = '/healthz';
 const QUERY = 'appNamespace=argocd&project=default&namespace=argoflow-e2e&resourceName=argoflow-hello-e2e&version=v1alpha1&group=argoproj.io&kind=Workflow';
+const identity = new URLSearchParams(QUERY);
 const RESOURCE_PATH = `/api/v1/applications/argoflow-e2e/resource?${QUERY}`;
 const CONTROLS = [[HEALTH, '/healthz?full=true'], [TREE, '/api/v1/applications/argoflow-e2e/resource-tree']];
 const categories = status => status === 504 ? 'deadline_exceeded_candidate' : status === 500 ? 'unknown_candidate' : status === 401 || status === 403 ? 'auth' : status === 'timeout' ? 'transport_timeout' : status === 'unavailable' ? 'unavailable' : 'unknown';
-const diagnostic = (write, phase, event, route, source, status, durationMs) => write(`[smoke-diag] ${JSON.stringify({timestamp: new Date().toISOString(), phase, event, route, method: 'GET', status, durationMs: Math.min(8000, Math.max(0, Math.round(durationMs))), source, category: categories(status)})}`);
+const diagnostic = (write, phase, event, route, source, status, durationMs, category) => write(`[smoke-diag] ${JSON.stringify({timestamp: new Date().toISOString(), phase, event, route, method: 'GET', status, durationMs: Math.min(8000, Math.max(0, Math.round(durationMs))), source, category: category || categories(status)})}`);
 const fixtureRequest = raw => {
   try {
     const url = new URL(raw);
-    return ['localhost', '127.0.0.1'].includes(url.hostname) && url.port === '8090' && url.pathname === '/api/v1/applications/argoflow-e2e/resource' &&
-      url.searchParams.get('namespace') === 'argoflow-e2e' && url.searchParams.get('resourceName') === 'argoflow-hello-e2e' &&
-      url.searchParams.get('group') === 'argoproj.io' && url.searchParams.get('kind') === 'Workflow' &&
-      (!url.searchParams.has('appNamespace') || url.searchParams.get('appNamespace') === 'argocd') &&
-      (!url.searchParams.has('project') || url.searchParams.get('project') === 'default');
+    if (url.protocol !== 'https:' || !['localhost', '127.0.0.1'].includes(url.hostname) || url.port !== '8090' ||
+        url.pathname !== '/api/v1/applications/argoflow-e2e/resource' || url.hash) return false;
+    const keys = [...url.searchParams.keys()];
+    if (keys.length !== new Set(keys).size) return false;
+    // The client omits empty optional Application context fields; all resource selectors are mandatory.
+    return keys.every(key => identity.has(key) && url.searchParams.get(key) === identity.get(key)) &&
+      [...identity.keys()].every(key => ['appNamespace', 'project'].includes(key) || url.searchParams.has(key));
   } catch { return false; }
 };
 
@@ -41,6 +44,37 @@ const podName = () => new Promise(resolve => execFile('kubectl', ['-n', 'argocd'
   } catch { resolve(null); }
 }));
 
+// Adapt the historical post-smoke collector into fixed-schema failure-time events.
+// Its sanitized records stay in memory and are never passed to the probe writer.
+async function podSnapshot(collect, emit, signal) {
+  const names = new Map([
+    ['argocd-server', 'pod_server'],
+    ['argocd-redis', 'pod_redis'],
+    ['argocd-application-controller', 'pod_controller']
+  ]);
+  const states = new Map([...names].map(([component]) => [component, {seen: false, unavailable: false, ready: true, restarts: 0}]));
+  try {
+    await collect(line => {
+      try {
+        const record = JSON.parse(line.slice('[smoke-diag] '.length));
+        const state = states.get(record.component);
+        if (!state) return;
+        if (record.event === 'kubernetes_unavailable') state.unavailable = true;
+        if (record.event !== 'pod') return;
+        state.seen = true;
+        state.ready &&= record.podPhase === 'Running' && Array.isArray(record.containers) && record.containers.length > 0 && record.containers.every(container => container.ready === true);
+        state.restarts = Math.min(999, state.restarts + (record.containers || []).reduce((sum, container) => sum + (Number.isInteger(container.restarts) ? container.restarts : 0), 0));
+      } catch { /* No raw collector output or parsing errors leave this function. */ }
+    }, undefined, signal);
+  } catch { /* Snapshot is diagnostic-only. */ }
+  if (signal?.aborted) return;
+  for (const [component, event] of names) {
+    const state = states.get(component);
+    emit(event, HEALTH, 'pod_direct', state.seen ? state.restarts : 'unavailable', 0,
+      state.unavailable ? 'unavailable' : !state.seen ? 'unknown' : state.ready ? 'ready' : 'not_ready');
+  }
+}
+
 // Injected in unit tests; production uses an ephemeral local port-forward only.
 export async function runResourceProbe({page, phase, write = console.log, request = localRequest, selectPod = podName, forward = startPodForward, collect = collectKubernetes, signal, endpointMs = 4000}) {
   const base = 'https://127.0.0.1:8090';
@@ -48,7 +82,7 @@ export async function runResourceProbe({page, phase, write = console.log, reques
   try { cookies = (await page.cookies(base)).filter(c => c.name === 'argocd.token' && typeof c.value === 'string'); } catch { cookies = []; }
   // An unauthenticated request cannot distinguish API failure from auth rejection.
   const cookie = cookies.length === 1 ? `${cookies[0].name}=${cookies[0].value}` : null;
-  const emit = (event, route, source, status, duration) => diagnostic(write, phase(), event, route, source, status, duration);
+  const emit = (event, route, source, status, duration, category) => diagnostic(write, phase(), event, route, source, status, duration, category);
   const probe = async (origin, source, route, path) => {
     const start = performance.now();
     if (!cookie || signal?.aborted) { emit('resource_probe', route, source, 'unavailable', 0); return; }
@@ -68,7 +102,7 @@ export async function runResourceProbe({page, phase, write = console.log, reques
     }
   };
   if (!cookie || signal?.aborted) { emit('resource_probe', ROUTE, 'service_forward', 'unavailable', 0); emit('resource_probe', ROUTE, 'pod_direct', 'unavailable', 0); return; }
-  const snapshot = collect(write, undefined, signal).catch(() => {});
+  const snapshot = podSnapshot(collect, emit, signal);
   await probe(base, 'service_forward', ROUTE, RESOURCE_PATH);
   for (const [route, path] of CONTROLS) await probe(base, 'service_forward', route, path);
   let stop;
