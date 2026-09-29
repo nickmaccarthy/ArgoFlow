@@ -1,0 +1,65 @@
+# Opt-in diagnostic only. This workflow is not a required check and cannot release.
+name: Disposable Redis outage experiment
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/redis-outage-experiment.yml'
+      - 'scripts/redis-outage-experiment.mjs'
+      - 'test/redis-outage-experiment.test.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  redis-outage-experiment:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'experiment/redis-outage-kind-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      KUBECONFIG: ${{ runner.temp }}/redis-experiment-kubeconfig
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      ARGOCD_VERSION: v3.4.7
+      FIXTURE_SHA: ${{ github.event.pull_request.head.sha }}
+      FIXTURE_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Create job-local kind cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: argoflow-redis-experiment
+      - name: Verify disposable cluster before installing anything
+        run: node scripts/redis-outage-experiment.mjs --verify
+      - name: Install pinned Argo CD and fixture prerequisites
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply --server-side -n argocd -f 'https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.7/manifests/install.yaml'
+          kubectl -n argocd rollout status deploy/argocd-server --timeout=420s
+          kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace argo-events --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply --server-side -n argo -f 'https://raw.githubusercontent.com/argoproj/argo-workflows/v3.7.4/manifests/quick-start-minimal.yaml'
+          kubectl apply --server-side -n argo-events -f 'https://raw.githubusercontent.com/argoproj/argo-events/v1.9.11/manifests/install.yaml'
+          kubectl wait --for=condition=Established \
+            crd/workflows.argoproj.io \
+            crd/workflowtemplates.argoproj.io \
+            crd/cronworkflows.argoproj.io \
+            crd/eventbus.argoproj.io \
+            crd/eventsources.argoproj.io \
+            crd/sensors.argoproj.io \
+            --timeout=180s
+          kubectl -n argo rollout status deploy/workflow-controller --timeout=300s
+      - name: Baseline, outage and verified recovery
+        timeout-minutes: 18
+        run: node scripts/redis-outage-experiment.mjs
+      # Also runs if the probe step is cancelled or hits its deadline. A failed
+      # restore remains red; no failure is masked by continue-on-error.
+      - name: Restore Redis even after aborted experiment
+        if: always()
+        timeout-minutes: 2
+        run: node scripts/redis-outage-experiment.mjs --cleanup
