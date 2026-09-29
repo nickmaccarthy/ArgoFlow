@@ -118,20 +118,20 @@ const kube = async args => {
   return output.trim();
 };
 
-async function forward(target, remotePort) {
-  const child = spawn('kubectl', ['-n', NAMESPACE, 'port-forward', '--address', '127.0.0.1', target, `:${remotePort}`], {stdio: ['ignore', 'pipe', 'pipe']});
+export async function forward(target, remotePort, {spawnForward = spawn, timeoutMs = 8000} = {}) {
+  const child = spawnForward('kubectl', ['-n', NAMESPACE, 'port-forward', '--address', '127.0.0.1', target, `:${remotePort}`], {stdio: ['ignore', 'pipe', 'pipe']});
   child.stderr.resume(); // Never print kubectl stderr: it may include resource identifiers.
   try {
     const port = await bounded(() => new Promise((resolve, reject) => {
       let text = '';
       child.stdout.on('data', chunk => {
         text = (text + chunk.toString()).slice(-512);
-        const match = text.match(new RegExp(`Forwarding from 127\\.0\\.0\\.1:(\\d+) -> ${remotePort}`));
-        if (match) resolve(Number(match[1]));
+        const match = text.match(/Forwarding from 127\.0\.0\.1:(\d+) -> (443|8080)/);
+        if (match && Number(match[2]) === remotePort && Number(match[1]) >= 1 && Number(match[1]) <= 65535) resolve(Number(match[1]));
       });
       child.on('error', () => reject(new Error('forward start failed')));
       child.on('exit', () => reject(new Error('forward exited')));
-    }), 8000);
+    }), timeoutMs);
     return {port, stop: () => child.kill()};
   } catch { child.kill(); throw new Error('forward unavailable'); }
 }

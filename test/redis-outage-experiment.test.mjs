@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {test} from 'node:test';
-import {experiment, probePhase, redisState, safeRecord, verifyDisposableCluster} from '../scripts/redis-outage-experiment.mjs';
+import {experiment, forward, probePhase, redisState, safeRecord, verifyDisposableCluster} from '../scripts/redis-outage-experiment.mjs';
 
 const fixture = () => {
   let replicas = 1;
@@ -26,6 +28,41 @@ const run = (overrides = {}) => {
   return {f, lines, options: {kube: f.kube, http: async () => 200, ports, token: 'PRIVATE_TOKEN',
     write: line => lines.push(line), sleep: async () => {}, attempts: 2, ...overrides}};
 };
+
+test('kubectl announcements start both forwards; wrong port and silent process fail within deadline', async () => {
+  const children = [];
+  const fake = (announcement, target, remotePort) => (binary, args, options) => {
+    assert.equal(binary, 'kubectl');
+    assert.deepEqual(args, ['-n', 'argocd', 'port-forward', '--address', '127.0.0.1', target, `:${remotePort}`]);
+    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => { child.stdout.destroy(); child.stderr.destroy(); child.killed = true; };
+    children.push(child);
+    if (announcement) queueMicrotask(() => {
+      child.stderr.write('SECRET_POD_NAME');
+      child.stdout.write(announcement);
+    });
+    return child;
+  };
+  const service = await forward('svc/argocd-server', 443, {
+    spawnForward: fake('Forwarding from 127.0.0.1:38123 -> 443\n', 'svc/argocd-server', 443), timeoutMs: 50
+  });
+  const pod = await forward('pod/server', 8080, {
+    spawnForward: fake('Forwarding from 127.0.0.1:39124 -> 8080\n', 'pod/server', 8080), timeoutMs: 50
+  });
+  assert.equal(service.port, 38123);
+  assert.equal(pod.port, 39124);
+  service.stop(); pod.stop();
+  await assert.rejects(forward('svc/argocd-server', 443, {
+    spawnForward: fake('Forwarding from 127.0.0.1:38123 -> 8080\n', 'svc/argocd-server', 443), timeoutMs: 20
+  }), /^Error: forward unavailable$/);
+  await assert.rejects(forward('pod/server', 8080, {
+    spawnForward: fake(null, 'pod/server', 8080), timeoutMs: 20
+  }), /^Error: forward unavailable$/);
+  assert.ok(children.every(child => child.killed));
+});
 
 test('baseline, isolated outage, restoration and both forward routes; output is a strict schema', async () => {
   const {f, lines, options} = run({http: async url => f.replicas === 0 && !url.includes('/healthz') ? 504 : 200});
