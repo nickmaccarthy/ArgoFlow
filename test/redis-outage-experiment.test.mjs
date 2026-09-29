@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import {readFile, readdir} from 'node:fs/promises';
 import {PassThrough} from 'node:stream';
 import {test} from 'node:test';
 import {experiment, forward, probePhase, redisState, safeRecord, verifyDisposableCluster} from '../scripts/redis-outage-experiment.mjs';
@@ -22,6 +23,40 @@ const fixture = () => {
   return {kube, calls, get replicas() { return replicas; }};
 };
 const ports = {service: 1001, server_pod: 1002};
+
+test('disposable workflow installs pinned controllers and waits for every fixture CRD before probes', async () => {
+  const base = new URL('../', import.meta.url);
+  const application = await readFile(new URL('test/e2e/argocd-application.yaml', base), 'utf8');
+  assert.match(application, /path: test\/e2e\/manifests\b/);
+  const files = await readdir(new URL('test/e2e/manifests/', base));
+  const crds = {
+    Workflow: 'workflows.argoproj.io', WorkflowTemplate: 'workflowtemplates.argoproj.io',
+    CronWorkflow: 'cronworkflows.argoproj.io', EventBus: 'eventbus.argoproj.io',
+    EventSource: 'eventsources.argoproj.io', Sensor: 'sensors.argoproj.io',
+    ServiceAccount: null, Role: null, RoleBinding: null
+  };
+  const kinds = new Set();
+  for (const file of files.filter(name => name.endsWith('.yaml'))) {
+    const manifest = await readFile(new URL(`test/e2e/manifests/${file}`, base), 'utf8');
+    for (const match of manifest.matchAll(/^kind: (\w+)\s*$/gm)) kinds.add(match[1]);
+  }
+  assert.ok(kinds.size > 0, 'fixture must have resources');
+  const workflow = await readFile(new URL('.github/workflows/redis-outage-experiment.yml', base), 'utf8');
+  const install = workflow.split('      - name: Install pinned Argo CD and fixture prerequisites\n')[1]
+    ?.split('      - name: Baseline, outage and verified recovery\n')[0];
+  assert.ok(install, 'install must precede probes');
+  assert.match(install, /argoproj\/argo-cd\/v3\.4\.7\/manifests\/install\.yaml/);
+  assert.match(install, /argoproj\/argo-workflows\/v3\.7\.4\/manifests\/quick-start-minimal\.yaml/);
+  assert.match(install, /argoproj\/argo-events\/v1\.9\.11\/manifests\/install\.yaml/);
+  const wait = install.match(/kubectl wait --for=condition=Established ([\s\S]*?) --timeout=(\d+)s/);
+  assert.ok(wait, 'CRD readiness must have a bounded deadline');
+  assert.ok(Number(wait[2]) > 0 && Number(wait[2]) <= 180);
+  for (const kind of kinds) {
+    assert.ok(Object.hasOwn(crds, kind), `unknown fixture kind ${kind}: add its prerequisite`);
+    if (crds[kind]) assert.ok(wait[1].includes(`crd/${crds[kind]}`), `${kind} CRD not awaited`);
+  }
+});
+
 const run = (overrides = {}) => {
   const f = fixture();
   const lines = [];
